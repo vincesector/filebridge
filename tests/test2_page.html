@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>filebridge test page</title>
+<style>body{font:14px sans-serif;margin:20px} #dropzone{border:3px dashed #888;height:120px;width:400px;display:flex;align-items:center;justify-content:center}
+#dropzone.over{background:#cfe}</style></head>
+<body>
+<h3>filebridge test page</h3>
+<input id="fileinput" type="file" multiple style="opacity:0;position:absolute;left:-9999px">
+<label for="fileinput" id="pick">pick (label)</label>
+<div id="dropzone">drop files here</div>
+<button id="menu-upload">Upload file (dynamic input)</button>
+<button id="reset">reset</button>
+<input id="title" type="text" value="old title">
+<div id="shadow-host"></div>
+<iframe id="fr" src="/frame.html" width="400" height="60"></iframe>
+<iframe id="xfr" src="http://localhost:8765/frame2.html" width="400" height="60"></iframe>
+<div id="closed-host"></div>
+<ul id="log"></ul>
+<script>
+const log = document.getElementById('log');
+async function report(src, files) {
+  for (const f of files) {
+    const tail = await f.slice(Math.max(0, f.size - 1048576)).arrayBuffer();
+    const h = await crypto.subtle.digest('SHA-256', tail);
+    const hex = [...new Uint8Array(h)].map(b => b.toString(16).padStart(2, '0')).join('');
+    const li = document.createElement('li'); li.dataset.src = src;
+    li.textContent = `${src}|${f.name}|${f.size}|${hex}`; log.appendChild(li);
+  }
+  const d = document.createElement('div'); d.className = 'done'; d.textContent = 'Upload complete: ' + files.length + ' file(s) via ' + src; document.body.appendChild(d);
+}
+window.fbReport = report;
+document.getElementById('fileinput').addEventListener('change', e => report('input', e.target.files));
+const dz = document.getElementById('dropzone');
+dz.addEventListener('dragenter', e => { e.preventDefault(); dz.classList.add('over'); });
+dz.addEventListener('dragover', e => { e.preventDefault(); });
+dz.addEventListener('dragleave', () => dz.classList.remove('over'));
+dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('over'); report('drop' + (e.isTrusted ? '-trusted' : '-synthetic'), e.dataTransfer.files); });
+document.getElementById('menu-upload').addEventListener('click', () => {
+  const i = document.createElement('input'); i.type = 'file';
+  i.addEventListener('change', () => report('dynamic', i.files)); i.click();
+});
+document.getElementById('reset').addEventListener('click', () => { log.innerHTML = ''; document.querySelectorAll('.done').forEach(d => d.remove()); });
+const root = document.getElementById('shadow-host').attachShadow({mode: 'open'});
+root.innerHTML = '<input id="shadowinput" type="file">';
+root.getElementById('shadowinput').addEventListener('change', e => report('shadow', e.target.files));
+const closed = document.getElementById('closed-host').attachShadow({mode: 'closed'});
+closed.innerHTML = '<input id="closedinput" type="file">';
+closed.getElementById('closedinput').addEventListener('change', e => report('closed', e.target.files));
+window.addEventListener('message', e => { if (typeof e.data === 'string' && e.data.startsWith('xframe|')) {
+  const li = document.createElement('li'); li.dataset.src = 'xframe'; li.textContent = e.data; log.appendChild(li);
+  const d = document.createElement('div'); d.className = 'done'; d.textContent = 'Upload complete: via xframe'; document.body.appendChild(d); } });
+</script></body></html>
