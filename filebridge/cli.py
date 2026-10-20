@@ -11,7 +11,7 @@ import sys
 import time
 from typing import Any
 
-from . import core
+from . import core, policy
 from .common import FBError
 
 
@@ -53,6 +53,8 @@ async def wait_for_job(job_id: str, quiet: bool) -> dict[str, Any]:
 def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--json", action="store_true", help="machine-readable JSON output")
+    common.add_argument("--allow-path", action="append", default=[], metavar="DIR",
+                        help="also allow reading files under DIR for this run (repeatable)")
     p = argparse.ArgumentParser(prog="filebridge", description="Move files of any size anywhere (rclone, headless browser uploads, local helpers).")
     sub = p.add_subparsers(dest="cmd", metavar="command")
 
@@ -60,7 +62,8 @@ def build_parser() -> argparse.ArgumentParser:
         sp = sub.add_parser(name, parents=[common], help=help_, description=help_, **kw)
         return sp
 
-    add("mcp", "run the MCP server on stdio")
+    sp = add("mcp", "run the MCP server on stdio")
+    sp.add_argument("--slim", action="store_true", help="expose only the upload tools (saves agent context)")
     add("remotes", "list configured rclone remotes")
     sp = add("transfer", "copy/move/sync between local and remotes as a background job")
     sp.add_argument("src"); sp.add_argument("dest")
@@ -84,9 +87,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp = add("clipboard", "put files on the macOS pasteboard"); sp.add_argument("paths", nargs="+")
     sp = add("reveal", "show a path in Finder (opens a window)"); sp.add_argument("path")
 
+    def verify_args(sp):
+        sp.add_argument("--verify-text", help="after the action, wait until this text shows on the page")
+        sp.add_argument("--verify-selector", help="after the action, wait until this selector matches")
+        sp.add_argument("--verify-timeout", type=float, default=30)
+
     sp = add("set-files", "attach local files to a file input in the headless browser (no size cap)")
     sp.add_argument("--tab", required=True, help="tab id or part of its url/title")
     sp.add_argument("--selector", help="CSS selector of the <input type=file>")
+    sp.add_argument("--ref", help="element ref from `browser snapshot`")
+    verify_args(sp)
     sp.add_argument("paths", nargs="+")
     sp = add("serve", "serve files to your own signed-in browser (any size) and print a JS snippet that uploads them")
     sp.add_argument("--selector", help="CSS selector of the <input type=file> to fill; omit to drop on the page")
@@ -94,15 +104,22 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--ttl", type=float, default=1800, help="seconds before the server stops (it also stops once every file was fetched)")
     sp.add_argument("paths", nargs="+")
     sp = add("drop", "drag-and-drop local files onto a drop zone")
-    sp.add_argument("--tab", required=True); sp.add_argument("--selector"); sp.add_argument("--x", type=float); sp.add_argument("--y", type=float)
+    sp.add_argument("--tab", required=True); sp.add_argument("--selector"); sp.add_argument("--ref")
+    sp.add_argument("--x", type=float); sp.add_argument("--y", type=float)
     sp.add_argument("--method", choices=["auto", "cdp", "synthetic"], default="auto")
+    verify_args(sp)
     sp.add_argument("paths", nargs="+")
 
     b = sub.add_parser("browser", help="manage the dedicated automation browser").add_subparsers(dest="bcmd", metavar="action", required=True)
     sp = b.add_parser("launch", parents=[common], help="start/reuse it (headless unless --visible)")
     sp.add_argument("--url"); sp.add_argument("--browser", choices=["auto", "brave", "chrome"], default="auto")
     sp.add_argument("--visible", action="store_true", help="show a window; ONLY for the one-time human sign-in to a site")
-    b.add_parser("close", parents=[common], help="close it")
+    sp = b.add_parser("attach", parents=[common], help="use your already-running Chrome/Brave (started with --remote-debugging-port); never launches or closes it")
+    sp.add_argument("--cdp-url", help="loopback DevTools endpoint (default: try http://127.0.0.1:9222, then DevToolsActivePort)")
+    sp.add_argument("--url", help="open this page in a new tab")
+    b.add_parser("close", parents=[common], help="close it (attach mode: detach only)")
+    sp = b.add_parser("snapshot", parents=[common], help="list interactive elements with refs (e12) for --ref")
+    sp.add_argument("--tab", required=True); sp.add_argument("--max", type=int, default=300)
     sp = b.add_parser("navigate", parents=[common], help="point an existing tab at a URL")
     sp.add_argument("--tab", required=True); sp.add_argument("url"); sp.add_argument("--timeout", type=float, default=30)
     sp = b.add_parser("text", parents=[common], help="read the visible text of a page or element")
@@ -110,11 +127,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp = b.add_parser("screenshot", parents=[common], help="save a PNG of a tab (the browser is headless)")
     sp.add_argument("--tab", required=True); sp.add_argument("--path"); sp.add_argument("--full-page", action="store_true")
     sp = b.add_parser("type", parents=[common], help="type into a field")
-    sp.add_argument("--tab", required=True); sp.add_argument("--selector", required=True); sp.add_argument("text")
+    sp.add_argument("--tab", required=True); sp.add_argument("--selector"); sp.add_argument("--ref"); sp.add_argument("text")
     sp.add_argument("--clear", action="store_true"); sp.add_argument("--enter", action="store_true")
     b.add_parser("tabs", parents=[common], help="list tabs")
     sp = b.add_parser("click", parents=[common], help="click an element; --file fills a file chooser it opens")
-    sp.add_argument("--tab", required=True); sp.add_argument("--selector", required=True); sp.add_argument("--file", action="append", dest="files")
+    sp.add_argument("--tab", required=True); sp.add_argument("--selector"); sp.add_argument("--ref"); sp.add_argument("--file", action="append", dest="files")
     sp = b.add_parser("wait", parents=[common], help="wait for a selector or text")
     sp.add_argument("--tab", required=True); sp.add_argument("what", help="CSS selector or text"); sp.add_argument("--timeout", type=float, default=60)
     return p
@@ -145,24 +162,48 @@ async def dispatch(a: argparse.Namespace) -> tuple[dict[str, Any], int]:
     if c == "clipboard": return await core.clipboard_files(a.paths), 0
     if c == "reveal": return await core.reveal(a.path), 0
     if c == "set-files":
-        r = await core.browser_set_files(a.tab, a.paths, a.selector)
-        return r, 0 if r.get("ok") else 1
+        r = await core.browser_set_files(a.tab, a.paths, a.selector, a.ref, a.verify_text, a.verify_selector, a.verify_timeout)
+        return r, 0 if r.get("ok") and r.get("verified", True) else 1
     if c == "drop":
-        r = await core.browser_drop_files(a.tab, a.paths, a.selector, a.x, a.y, a.method)
-        return r, 0 if r.get("ok") else 1
+        r = await core.browser_drop_files(a.tab, a.paths, a.selector, a.x, a.y, a.method, a.ref, a.verify_text, a.verify_selector, a.verify_timeout)
+        return r, 0 if r.get("ok") and r.get("verified", True) else 1
     if c == "browser":
-        if a.bcmd == "launch": return await core.browser_launch(a.url, a.browser, a.visible), 0
+        if a.bcmd == "launch": return await core.browser_launch(a.url, a.browser, "visible" if a.visible else "headless"), 0
+        if a.bcmd == "attach": return await core.browser_launch(a.url, "auto", "attach", a.cdp_url), 0
         if a.bcmd == "close": return await core.browser_close(), 0
+        if a.bcmd == "snapshot": return await core.browser_snapshot(a.tab, a.max), 0
         if a.bcmd == "tabs": return await core.browser_tabs(), 0
         if a.bcmd == "navigate": return await core.browser_navigate(a.tab, a.url, a.timeout), 0
         if a.bcmd == "text": return await core.browser_text(a.tab, a.selector, a.max_chars), 0
         if a.bcmd == "screenshot": return await core.browser_screenshot(a.tab, a.path, a.full_page), 0
-        if a.bcmd == "type": return await core.browser_type(a.tab, a.selector, a.text, a.clear, a.enter), 0
-        if a.bcmd == "click": return await core.browser_click(a.tab, a.selector, a.files), 0
+        if a.bcmd == "type": return await core.browser_type(a.tab, a.selector, a.text, a.clear, a.enter, a.ref), 0
+        if a.bcmd == "click": return await core.browser_click(a.tab, a.selector, a.files, a.ref), 0
         if a.bcmd == "wait":
             r = await core.browser_wait(a.tab, a.what, a.timeout)
             return r, 0 if r.get("found") else 1
+    if c == "serve":
+        srv = await core.upload_own(a.paths, a.selector, a.ttl, a.port)
+        info = srv.info()
+        if a.json:
+            print(json.dumps(info), flush=True)
+        else:
+            print("urls (each works once):\n" + "\n".join("  " + u for u in info["urls"]) + "\n" + "".join(f"warning: {w}\n" for w in info.get("warnings", []))
+                  + "snippet:\n" + info["snippet"], flush=True)
+        st = await asyncio.to_thread(srv.wait)
+        return st, 0 if st["served"] == st["total"] else 1
     raise AssertionError(c)
+
+
+async def tty_approve(question: str) -> bool | None:
+    if not sys.stdin.isatty():
+        return None
+    print(question + " [y/N] ", end="", file=sys.stderr, flush=True)
+    return (await asyncio.to_thread(sys.stdin.readline)).strip().lower() in ("y", "yes")
+
+
+async def run(a: argparse.Namespace) -> tuple[dict[str, Any], int]:
+    policy.approver.set(tty_approve)
+    return await dispatch(a)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -171,22 +212,16 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd is None:
         parser.print_help()
         return 2
-    if a.cmd == "mcp":
-        from .server import main as serve
-        serve()
-        return 0
-    if a.cmd == "serve":
-        from .servefiles import serve
-        def ready(info):
-            print(json.dumps(info) if a.json else "urls:\n" + "\n".join("  " + u for u in info["urls"]) + "\nsnippet:\n" + info["snippet"], flush=True)
-        r = serve(a.paths, a.port, a.ttl, a.selector, ready)
-        print(json.dumps({"served": r["served"]}) if a.json else f"served: {r['served']}", flush=True)
-        return 0 if r["served"] else 1
     try:
-        result, code = asyncio.run(dispatch(a))
+        for d in a.allow_path:
+            policy.add_run_root(d)
+        if a.cmd == "mcp":
+            from .server import main as serve
+            serve(a.slim)
+            return 0
+        result, code = asyncio.run(run(a))
     except FBError as e:
-        msg = str(e).removeprefix("Error executing tool ")
-        print(json.dumps({"error": msg}) if a.json else f"error: {msg}", file=sys.stderr)
+        print(json.dumps(e.to_dict()) if a.json else f"error [{e.code}]: {e.message}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         return 130
