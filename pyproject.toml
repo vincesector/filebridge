@@ -1,6 +1,6 @@
 [project]
 name = "filebridge"
-version = "0.1.0"
+version = "0.2.0"
 description = "MCP server and CLI that moves files of any size: rclone transfers, no-size-cap browser uploads over CDP, and uploads through your own signed-in browser"
 readme = "README.md"
 license = "MIT"
