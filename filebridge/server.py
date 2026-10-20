@@ -19,11 +19,15 @@ from .common import FBError
 mcp = MCPServer(
     "filebridge",
     instructions=(
-        "Upload to a site the user is signed in to in their own browser: browser_upload_own (returns a JS snippet to run in that tab). "
-        "Upload in the automation browser (or one you attached to): browser_launch, browser_snapshot, then browser_set_files / browser_drop_files / "
-        "browser_click(files=) with a ref or selector. Destination with an API/rclone backend: transfer(). Local-only: local_copy, clipboard_files, reveal. "
-        "Files outside the user's allowed folders need their approval; credentials (.ssh, .env, keys...) are always refused (code PathBlocked). "
-        "Errors come back as {ok:false, code, message}. Long jobs return a job_id; poll job_status. Nothing here deletes files."
+        "filebridge moves local files of any size where agents usually cannot: website upload forms, drop zones, cloud storage, "
+        "drives. Pick by destination. Website where the user is signed in to their own browser (Drive, X, Typefully, a form), or the "
+        "browser extension's upload fails / the file is over 10 MB: browser_upload_own, then run its `snippet` in that tab with your "
+        "JavaScript tool (top-level await, pass as is; links work once). Website in the automation browser or an attached "
+        "Chrome/Brave: browser_launch, browser_snapshot, then browser_set_files (file input) / browser_drop_files (drop zone) / "
+        "browser_click(files=) (upload button that opens a file picker), with a ref or selector. Cloud or NAS with an rclone remote: "
+        "remotes, then transfer (background job; poll job_status). Drives, NAS mounts, iCloud Drive folder: local_copy. Pasting into a"
+        " desktop app: clipboard_files. Files outside the user's allowed folders need their approval; credentials (.ssh, .env, "
+        "keys...) are always refused (code PathBlocked). Errors come back as {ok:false, code, message}. Nothing here deletes files."
     ),
 )
 
@@ -87,8 +91,10 @@ VerifyTimeout = Annotated[float, Field(ge=1, le=3600, description="Seconds to wa
 
 @tool(annotations=LOCAL_RO)
 async def remotes() -> dict[str, Any]:
-    """List configured rclone remotes and their backend types (never prints tokens).
-    If the one you need is missing, call setup_instructions(backend)."""
+    """Use first when the user wants files on cloud storage or a NAS (S3, R2, Dropbox, OneDrive, SFTP, Drive...) and you need the
+    'remote:' name to pass to transfer / ls / link. Lists the rclone remotes already configured, with their backend type
+    (tokens are never printed). Returns {remotes: [{name, type, use_as: 'name:path'}], count}. Empty or missing the one you need:
+    call setup_instructions(backend) and hand the command to the user; you cannot configure accounts yourself."""
     return await core.remotes()
 
 
@@ -103,27 +109,36 @@ async def transfer(
     confirm: Annotated[bool, Field(description="sync only: skip the dry-run requirement")] = False,
     bwlimit: Annotated[str | None, Field(description="Optional cap in bytes/s, e.g. '10M', so a big upload does not saturate the link")] = None,
 ) -> dict[str, Any]:
-    """Copy/move/sync files or folders between local disk and cloud remotes with rclone, any size, resumable.
-    Runs in the BACKGROUND and returns a job_id immediately; poll job_status(job_id).
+    """Use when files must go to (or come from) cloud storage or a NAS that has an rclone remote: S3/R2 buckets, SFTP/NAS,
+    Dropbox, OneDrive, Drive... Prefer it over a website upload whenever the destination has a remote, and for multi-GB files.
+    Copies, moves or syncs a file or folder, any size, resumable, with rclone. Runs in the BACKGROUND: returns {job_id} at once;
+    poll job_status(job_id) until done. `dest` is always a folder the source lands in. Gotchas: existing files are skipped unless
+    overwrite=true; mode='move' deletes the source only after a verified copy; mode='sync' DELETES extra files on dest and needs a
+    prior dry_run=true (or confirm=true); a local source outside the user's allowed folders triggers an approval prompt, and
+    credential files (.ssh, .env, keys) are always refused (PathBlocked). Unknown remote: RemoteNotConfigured.
     Examples: transfer('~/Videos/final.mp4', 'nas:uploads'); transfer('r2:reports', '~/Downloads/reports')."""
     return await core.transfer(src, dest, mode, dry_run, overwrite, confirm, bwlimit)
 
 
 @tool(annotations=LOCAL_RO)
 async def job_status(job_id: Annotated[str, Field(description="Id returned by transfer or local_copy")]) -> dict[str, Any]:
-    """Progress of a background job: state (running/done/error/cancelled), percent, bytes, speed, ETA, last error lines, log path."""
+    """Use after transfer or local_copy returned a job_id, to see whether the copy finished. Returns state
+    (running / done / error / cancelled), percent, bytes, speed, ETA, the last error lines and the log path. Poll every few seconds
+    for big files; do not report the upload as done until state is 'done'."""
     return await core.job_status(job_id)
 
 
 @tool(name="jobs", annotations=LOCAL_RO)
 async def jobs_list(limit: Annotated[int, Field(ge=1, le=100)] = 20) -> dict[str, Any]:
-    """List recent background jobs, newest first."""
+    """Use when you lost a job_id or the user asks what is copying right now. Lists recent background jobs from transfer and
+    local_copy, newest first, with their state."""
     return await core.jobs(limit)
 
 
 @tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 async def cancel(job_id: str) -> dict[str, Any]:
-    """Stop a running job (sends SIGTERM to its runner; partial uploads are not deleted)."""
+    """Use when the user wants to stop a running transfer or local_copy. Sends SIGTERM to the job's runner and returns its
+    final state. Partial files already written on the destination are left in place (nothing is deleted)."""
     return await core.cancel(job_id)
 
 
@@ -133,33 +148,39 @@ async def ls(
     recursive: bool = False,
     max: Annotated[int, Field(ge=1, le=5000, description="Max entries returned")] = 200,
 ) -> dict[str, Any]:
-    """List names, sizes and modification times at a remote (or local) path."""
+    """Use to check what is in a cloud/NAS folder before or after a transfer (e.g. to confirm the upload landed). Lists names,
+    sizes and modification times at 'remote:path' (a local path also works). recursive=true walks subfolders; max caps the entries."""
     return await core.ls(remote_path, recursive, max)
 
 
 @tool(annotations=RO)
 async def link(remote_path: Annotated[str, Field(description="'remote:path' of a file or folder")]) -> dict[str, Any]:
-    """Create/get a shareable link for a remote file or folder (backend must support it: Dropbox, OneDrive, S3-compatible...)."""
+    """Use after a transfer when the user wants a URL to share the uploaded file or folder. Creates or returns a public/shareable
+    link for 'remote:path'. Only works on backends that support links (Dropbox, OneDrive, Drive, S3-compatible...); otherwise an error."""
     return await core.link(remote_path)
 
 
 @tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 async def mkdir(remote_path: Annotated[str, Field(description="'remote:path' of the folder to create")]) -> dict[str, Any]:
-    """Create a folder (and parents) on a remote. Succeeds quietly if it already exists."""
+    """Use when a transfer needs a destination folder that should exist first (transfer usually creates it on its own).
+    Creates the folder and its parents on a remote; succeeds quietly if it already exists."""
     return await core.mkdir(remote_path)
 
 
 @tool(annotations=RO)
 async def stat(remote_path: Annotated[str, Field(description="'remote:path'")]) -> dict[str, Any]:
-    """Check whether a remote file or folder exists and get its size/type/modified time."""
+    """Use to check whether a specific remote file or folder exists (e.g. before overwriting, or to confirm an upload) and get
+    its size, type and modified time."""
     return await core.stat(remote_path)
 
 
 @tool(annotations=LOCAL_RO)
 async def setup_instructions(
-    backend: Annotated[str | None, Field(description="dropbox, onedrive, icloud, s3, r2, sftp Omit to list.")] = None,
+    backend: Annotated[str | None, Field(description="dropbox, onedrive, icloud, s3, r2 or sftp. Omit to list them.")] = None,
 ) -> dict[str, Any]:
-    """Exact commands a human runs to add a remote (OAuth/credentials are the human's job; this server never configures accounts)."""
+    """Use when the destination the user wants (Dropbox, OneDrive, iCloud, S3, R2, SFTP/NAS) is not in remotes().
+    Returns the exact rclone command the USER must run to add it, since OAuth and credentials are the human's job; this server never
+    configures accounts. Omit backend to list the supported names. Show the command to the user; do not try to run it for them."""
     return await core.setup_instructions(backend)
 
 
@@ -172,20 +193,27 @@ async def browser_launch(
     mode: Annotated[Literal["headless", "visible", "attach"], Field(description="headless (default): dedicated profile, nothing on screen. visible: same profile with a window, ONLY for the one-time human sign-in. attach: connect to the user's already-running Chrome/Brave started with --remote-debugging-port (never launched or closed by filebridge).")] = "headless",
     cdp_url: Annotated[str | None, Field(description="attach only: loopback DevTools endpoint, e.g. http://127.0.0.1:9222 or ws://127.0.0.1:PORT/devtools/browser/ID. Omit to try :9222, then Chrome/Brave's DevToolsActivePort file.")] = None,
 ) -> dict[str, Any]:
-    """Start (or reuse) the DEDICATED automation browser, HEADLESS by default (profile ~/.filebridge/browser-profile, DevTools on 127.0.0.1:9229),
-    or attach to the user's running browser with mode='attach'. Sessions saved in the dedicated profile (after a one-time mode='visible' sign-in) work headless afterwards."""
+    """Use when a website upload should happen in an automation browser rather than the user's everyday one: sites with no
+    login, sites the user signed into once in filebridge's dedicated profile, or the user's own Chrome/Brave started with
+    --remote-debugging-port (mode='attach'). Starts or reuses the browser and optionally opens `url` in a new tab. Returns the mode,
+    browser and tabs. Modes: 'headless' (default, dedicated profile ~/.filebridge/browser-profile, nothing on screen); 'visible' (same
+    profile with a window, ONLY for the one-time human sign-in, then launch headless again; logins persist); 'attach' (loopback DevTools
+    endpoint only, never launched or closed by filebridge). For a site the user is already signed in to in their normal browser,
+    browser_upload_own is usually the better tool. Next: browser_snapshot, then browser_set_files / browser_drop_files / browser_click."""
     return await core.browser_launch(url, browser, mode, cdp_url)
 
 
 @tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 async def browser_close() -> dict[str, Any]:
-    """Close the dedicated automation browser (profile and logins are kept). In attach mode this only detaches; the user's browser stays open."""
+    """Use when the browser work is finished and the automation browser should not keep running. Closes filebridge's
+    dedicated browser; its profile and logins are kept for next time. In attach mode it only detaches; the user's browser stays open."""
     return await core.browser_close()
 
 
 @tool(annotations=LOCAL_RO)
 async def browser_tabs() -> dict[str, Any]:
-    """List open tabs (id, title, url) in the automation browser or the attached browser."""
+    """Use to find the `tab` value for the other browser_* tools. Lists open tabs (id, title, url) in the automation browser
+    or the attached browser. Any tool's `tab` accepts the id or a unique part of the url/title."""
     return await core.browser_tabs()
 
 
@@ -194,8 +222,11 @@ async def browser_snapshot(
     tab: Tab,
     max_items: Annotated[int, Field(ge=1, le=2000, description="Cap on listed elements")] = 300,
 ) -> dict[str, Any]:
-    """Compact list of the page's interactive elements (role, name, text, ref like 'e12'): buttons, links, fields, file inputs (even hidden)
-    and drop zones (elements with drop/dragover listeners or upload text). Pass a ref to browser_set_files / browser_drop_files / browser_click / browser_type."""
+    """Use before any upload or click in the automation/attached browser, to find the right target without guessing a
+    CSS selector. Returns a compact list of interactive elements with refs (e.g. 'e12'): role, name, text for buttons, links, fields,
+    file inputs (hidden ones too) and drop zones (elements with drop/dragover listeners or upload-style text). Pass the ref to
+    browser_set_files / browser_drop_files / browser_click / browser_type. Refs die when the page navigates or reloads (a stale ref is
+    an error, never a wrong element): snapshot again. Cross-site iframes and closed shadow roots are not listed."""
     return await core.browser_snapshot(tab, max_items)
 
 
@@ -210,8 +241,15 @@ async def browser_set_files(
     verify_selector: VerifySelector = None,
     verify_timeout: VerifyTimeout = 30,
 ) -> dict[str, Any]:
-    """Attach local files to a file input via CDP DOM.setFileInputFiles. The browser reads the files from disk: no 10 MB cap, any size.
-    Searches shadow roots and iframes. If nothing matches, returns the candidate inputs it found. Verifies names and sizes in the page."""
+    """Use when a page in the automation or attached browser has an <input type=file> (visible or hidden) and you need to
+    attach a local file of any size: the fix for 'file upload over 10 MB fails' and 'agents cannot use the native file picker'.
+    Sets the files with CDP DOM.setFileInputFiles, so the browser reads them from disk (no size cap). Target with a ref from
+    browser_snapshot or a CSS selector; with neither it acts only when the page has exactly one file input, otherwise it returns
+    `candidates` and does nothing. Searches shadow roots and iframes (including cross-site). Returns {ok, files_in_page,
+    sizes_match_disk, ...}; add verify_text (e.g. the file name or 'Upload complete') to also wait for the site to confirm (verified).
+    Errors: SelectorNotFound (with candidates), NotSignedIn (page looks like a login wall), PathNotAllowed (user declined the approval
+    prompt for a file outside their allowed folders), PathBlocked (credential files, never allowed). If the input only appears after
+    clicking an 'Upload' button, use browser_click(files=...) instead."""
     return await core.browser_set_files(tab, paths, selector, ref, verify_text, verify_selector, verify_timeout)
 
 
@@ -229,8 +267,13 @@ async def browser_drop_files(
     verify_selector: VerifySelector = None,
     verify_timeout: VerifyTimeout = 30,
 ) -> dict[str, Any]:
-    """Drag and drop local files onto a page's drop zone with real CDP drag events (Input.dispatchDragEvent) carrying disk paths.
-    Reports which method worked and what the page received."""
+    """Use when an upload area in the automation or attached browser accepts drag-and-drop but has no usable file input
+    (Drive, X, Typefully style drop zones), i.e. 'drag a local file onto the page'. Drops local files of any size with real CDP drag
+    events (Input.dispatchDragEvent) carrying disk paths; if the page sees no files, method='auto' falls back to an in-page DataTransfer
+    of disk-backed files (still no size cap, but isTrusted=false). Target: ref from browser_snapshot, a selector (drops at its centre)
+    or x/y viewport coordinates. Returns which method worked and what the page received; add verify_text / verify_selector to wait for
+    the site's confirmation (verified). Main page and same-origin iframes only. Same path rules as browser_set_files (approval outside
+    allowed folders, PathBlocked for credentials)."""
     return await core.browser_drop_files(tab, paths, selector, x, y, method, ref, verify_text, verify_selector, verify_timeout)
 
 
@@ -242,8 +285,11 @@ async def browser_click(
     ref: Ref = None,
     files: Annotated[list[str] | None, Field(description="If the click opens a native file chooser (e.g. an 'Upload file' menu item), fill it with these paths")] = None,
 ) -> dict[str, Any]:
-    """Real mouse click at the element's centre (give selector or ref). File choosers are always intercepted (no native dialog ever appears);
-    pass files=[...] to fill them. Refuses to click an <input type=file> directly (use browser_set_files)."""
+    """Use to press buttons in the automation or attached browser, and especially for 'Upload file' buttons or menu items
+    that open a native file picker: pass files=[...] and the file chooser is intercepted and filled, so no OS dialog ever appears.
+    Real mouse click at the element's centre; target with a ref from browser_snapshot or a CSS selector (shadow roots and same-origin
+    iframes are searched). Refuses to click an <input type=file> directly: use browser_set_files for that. Returns what was clicked
+    and, with files, whether the chooser opened and was filled (files_set)."""
     return await core.browser_click(tab, selector, files, ref)
 
 
@@ -253,13 +299,17 @@ async def browser_wait(
     selector_or_text: Annotated[str, Field(description="CSS selector OR visible text, e.g. 'Upload complete'")],
     timeout: Annotated[float, Field(ge=1, le=3600, description="Seconds to wait")] = 60,
 ) -> dict[str, Any]:
-    """Wait until a CSS selector matches or the text appears anywhere on the page (shadow roots and iframes included)."""
+    """Use after an upload or navigation to wait for the site to finish: until a CSS selector matches or a text (e.g.
+    'Upload complete' or the file name) appears anywhere on the page, shadow roots and iframes included. Returns found or a Timeout
+    code. Prefer verify_text on set_files/drop when you know the text in advance."""
     return await core.browser_wait(tab, selector_or_text, timeout)
 
 
 @tool(annotations=WRITE)
 async def browser_navigate(tab: Tab, url: Annotated[str, Field(description="http(s):// or file:// URL")], timeout: Annotated[float, Field(ge=1, le=300)] = 30) -> dict[str, Any]:
-    """Navigate an existing tab to a URL and wait for it to load (avoids piling up new tabs). Warns (NotSignedIn) when it lands on a sign-in page."""
+    """Use to send an existing automation/attached tab to a URL (instead of piling up new tabs) and wait for it to load.
+    Warns with NotSignedIn when it lands on a sign-in page: then ask the user to sign in once with browser_launch(mode='visible'), or
+    switch to browser_upload_own in their own signed-in browser."""
     return await core.browser_navigate(tab, url, timeout)
 
 
@@ -269,7 +319,8 @@ async def browser_text(
     selector: Annotated[str | None, Field(description="Limit to this element; omit for the whole page")] = None,
     max_chars: Annotated[int, Field(ge=100, le=200000)] = 8000,
 ) -> dict[str, Any]:
-    """Read the visible text of the page (or one element). The browser is headless, so this is how you see status messages, errors and login walls."""
+    """Use to read what the headless browser shows (status messages, upload progress, errors, login walls), since you cannot
+    see its window. Returns the visible text of the page or one element (selector), cut at max_chars."""
     return await core.browser_text(tab, selector, max_chars)
 
 
@@ -279,7 +330,9 @@ async def browser_screenshot(
     path: Annotated[str | None, Field(description="Where to save the PNG (absolute or ~; must not exist). Default: ~/.filebridge/screenshots/")] = None,
     full_page: bool = False,
 ) -> dict[str, Any]:
-    """Save a PNG screenshot of the tab and return its path, so you can look at what the headless browser sees."""
+    """Use when text alone is not enough to understand the headless page (layout, where the upload button is, an error
+    dialog). Saves a PNG of the tab (full_page optional) and returns its path; read the image to look at it. path must not exist yet;
+    default folder ~/.filebridge/screenshots/."""
     return await core.browser_screenshot(tab, path, full_page)
 
 
@@ -292,7 +345,9 @@ async def browser_type(
     clear: Annotated[bool, Field(description="Select and delete the existing value first")] = False,
     press_enter: Annotated[bool, Field(description="Press Enter afterwards")] = False,
 ) -> dict[str, Any]:
-    """Type text into a field (selector or ref) with real input events (for titles/descriptions that must be filled before an upload)."""
+    """Use to fill text fields in the automation or attached browser, e.g. a title or description an upload form needs.
+    Types with real input events into a field picked by ref (from browser_snapshot) or selector; clear=true empties it first,
+    press_enter=true submits."""
     return await core.browser_type(tab, selector, text, clear, press_enter, ref)
 
 
@@ -308,21 +363,34 @@ async def browser_upload_own(
     verify_selector: Annotated[str | None, Field(description="Also return verify_snippet, which waits until this selector matches")] = None,
     verify_timeout: Annotated[float, Field(ge=1, le=3600, description="Seconds verify_snippet waits")] = 60,
 ) -> dict[str, Any]:
-    """Upload any-size local files into a tab of the user's OWN signed-in browser (Drive, X, Typefully...). Starts a token-protected server on 127.0.0.1
-    in the background and returns {server_id, urls, snippet, expires_in_s}. Run `snippet` in that tab with a tool that executes JavaScript there
-    (e.g. a browser extension); it fetches the files and fills the input or drops them on the page. Each URL works once. Poll serve_status(server_id)."""
+    """Use when a website needs a file uploaded and the user is signed in to that site in their OWN everyday browser
+    (Google Drive, X, Typefully, a form...), especially when the browser extension's upload tool fails, is unavailable, or the file is
+    over 10 MB. Also the answer to 'attach a local file to an <input type=file> from an agent' when you can run JavaScript in the tab.
+    Starts a token-protected server on 127.0.0.1 in the background and returns {server_id, urls, snippet, expires_in_s, files}.
+    Then run `snippet` in that tab with a tool that executes JavaScript there (e.g. Claude in Chrome's javascript tool): the page
+    fetches each file from localhost and fills the input matching `selector`, or, with no selector, drops the files on the element at
+    the page centre (how Drive/X/Typefully listen). Gotchas: the snippet uses top-level await, so pass it as is (do not wrap it in a
+    function); its last expression is a JSON string {ok:true, action, files, bytes} or {ok:false, code, message}. Each URL works ONCE
+    and the server stops when all files were fetched or after ttl seconds, so a retry needs a new browser_upload_own call (codes
+    LinkUsed / FetchBlocked). FetchBlocked can also mean the site's CSP or the browser's local-network permission blocked localhost.
+    Pass verify_text (e.g. the file name) or verify_selector to also get `verify_snippet`; run it after the upload snippet to wait for
+    the site's confirmation ({verified, waited_s}). Files outside the user's allowed folders trigger an approval prompt (PathNotAllowed
+    if declined); credential files are always refused (PathBlocked). Over 1 GiB returns a memory warning."""
     return await core.browser_upload_own(paths, selector, ttl, verify_text, verify_selector, verify_timeout)
 
 
 @tool(annotations=LOCAL_RO)
 async def serve_status(server_id: Annotated[str, Field(description="server_id from browser_upload_own")]) -> dict[str, Any]:
-    """State of a browser_upload_own server: running / done / expired / stopped, and per file pending / serving / served / failed."""
+    """Use after running a browser_upload_own snippet to confirm the page actually fetched the files. Returns the server state
+    (running / done / expired / stopped), served/total/failed counts and each file's state (pending / serving / served / failed).
+    'done' with every file served means the browser has the bytes; the site's own upload may still be in progress (use verify_snippet)."""
     return await core.serve_status(server_id)
 
 
 @tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 async def serve_stop(server_id: Annotated[str, Field(description="server_id from browser_upload_own")]) -> dict[str, Any]:
-    """Stop a browser_upload_own server now; its links stop working."""
+    """Use to cancel a browser_upload_own session you no longer need (wrong file, user changed their mind). Stops its server
+    right away; its links stop working. Returns the final status."""
     return await core.serve_stop(server_id)
 
 
@@ -336,20 +404,27 @@ async def local_copy(
     overwrite: Annotated[bool, Field(description="Replace files that exist at the destination (default skips them)")] = False,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """rsync -a --partial copy between local locations, as a background job (returns job_id; poll job_status). Never deletes."""
+    """Use when files must go to another place on this machine: an external drive, a mounted NAS share, or the iCloud Drive
+    folder (~/Library/Mobile Documents/com~apple~CloudDocs/<folder>/), which is more reliable than rclone's iCloud backend. Copies with
+    rsync -a --partial as a background job: returns {job_id}; poll job_status. A trailing '/' on a source folder copies its contents
+    (rsync semantics). Never deletes; existing files are skipped unless overwrite=true. Source outside the allowed folders asks the
+    user; credential files are refused (PathBlocked)."""
     return await core.local_copy(src, dest, overwrite, dry_run)
 
 
 @tool(annotations=WRITE_LOCAL)
 async def clipboard_files(ctx: Context, paths: Paths) -> dict[str, Any]:
-    """Put files on the clipboard as file references (replaces the clipboard). Cmd+V then pastes them into Finder, Slack, Telegram Desktop, WhatsApp, Mail...
-    macOS tested; Linux (xclip/wl-copy) and Windows (Set-Clipboard) untested."""
+    """Use when the user wants to send or attach files in a desktop app (Slack, Telegram Desktop, WhatsApp, Mail, Finder)
+    where they will paste: puts the files on the clipboard as file references (replacing what was there), then the user (or you, with
+    a keyboard tool) presses Cmd+V in that app. Same path rules as uploads. macOS tested; Linux (xclip/wl-copy) and Windows
+    (Set-Clipboard) untested."""
     return await core.clipboard_files(paths)
 
 
 @tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 async def reveal(path: Annotated[str, Field(description="Local file or folder to show in the file manager")]) -> dict[str, Any]:
-    """Reveal a path in Finder (open -R) or the platform's file manager. This opens a window on the user's screen."""
+    """Use when the user asks to see where a file is, or must drag it somewhere by hand. Shows the path in Finder (open -R) or the
+    platform's file manager. This opens a window on the user's screen, so only call it when they asked."""
     return await core.reveal(path)
 
 
