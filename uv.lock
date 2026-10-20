@@ -195,7 +195,7 @@ wheels = [
 ]
 
 [[package]]
-name = "filebridge"
+name = "filebridge-mcp"
 version = "0.2.0"
 source = { editable = "." }
 dependencies = [

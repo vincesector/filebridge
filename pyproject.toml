@@ -1,11 +1,11 @@
 [project]
-name = "filebridge"
+name = "filebridge-mcp"
 version = "0.2.0"
-description = "MCP server and CLI that moves files of any size: rclone transfers, no-size-cap browser uploads over CDP, and uploads through your own signed-in browser"
+description = "MCP server and CLI for AI agents (Claude Code, Codex): upload any-size local files into the browser you are signed in to, headless browser file inputs and drop zones, rclone transfers"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
-keywords = ["mcp", "model-context-protocol", "file-upload", "rclone", "chrome-devtools-protocol", "claude-code", "codex", "browser-automation"]
+keywords = ["mcp", "model-context-protocol", "file-upload", "rclone", "chrome-devtools-protocol", "claude-code", "codex", "browser-automation", "mcp-server", "upload", "file-input", "claude-in-chrome", "agents"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
@@ -25,12 +25,14 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/vincesector/filebridge"
+Homepage = "https://filebridge.evinho.xyz"
+Documentation = "https://github.com/vincesector/filebridge#readme"
 Repository = "https://github.com/vincesector/filebridge"
 Issues = "https://github.com/vincesector/filebridge/issues"
 
 [project.scripts]
 filebridge = "filebridge.cli:main"
+filebridge-mcp = "filebridge.cli:main"
 
 [build-system]
 requires = ["hatchling"]
