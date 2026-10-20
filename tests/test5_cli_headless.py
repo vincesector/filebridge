@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from filebridge import browser as fb
 
 HERE = Path(__file__).parent
-W = Path.home() / ".filebridge" / "test-cli"
+W = Path(__file__).parent / "_work" / "test-cli"
 CLI = shutil.which("filebridge") or str(Path(__file__).parents[1] / ".venv" / "bin" / "filebridge")
 PORT = 8765
 
@@ -100,7 +100,7 @@ print(sum(1 for w in ws if w.get('kCGWindowOwnerPID') == {info['pid']}))"""], ca
             real_spawn(args if any(a.startswith("--headless") for a in args) else args[:-1] + ["--headless=new", args[-1]])
         fb._spawn = fake_spawn
         try:
-            r3 = asyncio.run(fb.launch(None, "auto", visible=True))
+            r3 = asyncio.run(fb.launch(None, "auto", "visible"))
         finally:
             fb._spawn = real_spawn
         print("visible request ->", {k: r3[k] for k in ("mode", "restarted_for_mode_switch", "pid")}, "(old pid %d)" % info["pid"])

@@ -7,7 +7,7 @@ from mcp_client import call, session
 from filebridge import browser as fb
 
 HERE = Path(__file__).parent
-WORK = Path.home() / ".filebridge" / "test-src"
+WORK = Path(__file__).parent / "_work" / "test-src"
 BIG = WORK / "big300.bin"
 SIZE = 300 * 1024 * 1024
 PORT = 8765
@@ -76,12 +76,12 @@ async def main():
             print("\n[set_files] no selector, several inputs on the page -> candidates, nothing attached")
             await reset(s, tab)
             r = await call(s, "browser_set_files", tab=tab, selector=None, paths=[str(BIG)])
-            print("  ", {"ok": r["ok"], "reason": r["reason"], "candidates": [(c["selector_hint"], c["multiple"]) for c in r["candidates"]]})
+            print("  ", {"ok": r["ok"], "reason": r["message"], "candidates": [(c["selector_hint"], c["multiple"]) for c in r["candidates"]]})
             results["candidates returned"] = (not r["ok"]) and len(r["candidates"]) >= 5
 
             print("\n[set_files] selector matches nothing -> candidates")
             r = await call(s, "browser_set_files", tab=tab, selector="#does-not-exist", paths=[str(BIG)])
-            print("  ", {"ok": r["ok"], "reason": r["reason"], "n_candidates": len(r["candidates"])})
+            print("  ", {"ok": r["ok"], "reason": r["message"], "n_candidates": len(r["candidates"])})
             results["miss returns candidates"] = (not r["ok"]) and len(r["candidates"]) >= 5
 
             for label, sel, src in (("open shadow root", "#shadowinput", "shadow"), ("closed shadow root", "#closedinput", "closed"),
@@ -107,7 +107,7 @@ async def main():
             print("\n[drop_files] method=cdp only")
             await reset(s, tab)
             r = await call(s, "browser_drop_files", tab=tab, paths=[str(BIG)], selector="#dropzone", method="cdp")
-            print("  ", {k: r.get(k) for k in ("ok", "method", "trusted_events", "reason")}, "page_saw:", r.get("page_saw"))
+            print("  ", {k: r.get(k) for k in ("ok", "method", "trusted_events", "message")}, "page_saw:", r.get("page_saw"))
 
             print("\n[click] dynamic input via chooser interception, files given")
             await reset(s, tab)

@@ -7,7 +7,7 @@ from mcp_client import call, session
 
 HERE = Path(__file__).parent
 PORT = 8765
-OUT = Path.home() / ".filebridge" / "test-shots"
+OUT = Path(__file__).parent / "_work" / "test-shots"
 
 
 def serve():
@@ -46,7 +46,7 @@ async def main():
             res["type replaces value"] = ty["field_now"] == "My new title"
             ty = await call(s, "browser_type", tab=tab, selector="#title", text=" v2")
             res["type appends"] = ty["field_now"] == "My new title v2"
-            OUT.mkdir(exist_ok=True)
+            OUT.mkdir(parents=True, exist_ok=True)
             sh = await call(s, "browser_screenshot", tab=tab, path=str(OUT / "viewport.png"))
             sh2 = await call(s, "browser_screenshot", tab=tab, path=str(OUT / "full.png"), full_page=True)
             print("screenshots:", png_size(sh["path"]), sh["bytes"], "bytes;", png_size(sh2["path"]), sh2["bytes"], "bytes")

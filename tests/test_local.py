@@ -5,7 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from mcp_client import call, session
 
-W = Path.home() / ".filebridge" / "test-local"
+W = Path(__file__).parent / "_work" / "test-local"
 
 
 async def done(s, jid):

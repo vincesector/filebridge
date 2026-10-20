@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from mcp_client import call, session
 from filebridge import rclone
 
-HOME = Path.home() / ".filebridge"
+HOME = Path(__file__).parent / "_work"  # inside ~/Projects, an allowed root by default
 SRC_DIR = HOME / "test-src"
 REMOTE_DIR = HOME / "test-remote"
 SIZE = 2 * 1024**3

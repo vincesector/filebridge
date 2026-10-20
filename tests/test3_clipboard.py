@@ -31,12 +31,12 @@ def osa(script, *args):
 
 async def main():
     snap = osa(SNAPSHOT)
-    test_file = Path.home() / ".filebridge" / "clip-test.txt"
-    test_file.parent.mkdir(exist_ok=True)
+    test_file = Path(__file__).parent / "_work" / "clip-test.txt"
+    test_file.parent.mkdir(parents=True, exist_ok=True)
     test_file.write_text("filebridge clipboard test\n")
     try:
         async with session() as s:
-            r = await call(s, "clipboard_files", paths=[str(test_file), "~/.filebridge/clip-test.txt"])
+            r = await call(s, "clipboard_files", paths=[str(test_file), str(test_file.parent / "." / "clip-test.txt")])
             print("tool result:", r)
             # independent verification, outside the server code path
             print("independent read:", osa("""ObjC.import('AppKit'); const pb=$.NSPasteboard.generalPasteboard;
