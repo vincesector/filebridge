@@ -27,7 +27,7 @@ def now_iso() -> str:
 
 def meta_path(job_id: str) -> Path:
     if not JOB_ID_RE.match(job_id or ""):
-        raise FBError(f"Invalid job_id {job_id!r}. Expected something like 20261020-111452-a1b2c3 (see jobs()).")
+        raise FBError(f"Invalid job_id {job_id!r}. Expected something like 20261020-111452-a1b2c3 (see jobs()).", "InvalidArgument")
     return JOBS_DIR / f"{job_id}.json"
 
 
@@ -50,7 +50,7 @@ def append_event(event: dict[str, Any]) -> None:
 def read_meta(job_id: str) -> dict[str, Any]:
     p = meta_path(job_id)
     if not p.exists():
-        raise FBError(f"No such job {job_id}. Use jobs() to list recent ones.")
+        raise FBError(f"No such job {job_id}. Use jobs() to list recent ones.", "InvalidArgument")
     return json.loads(p.read_text())
 
 

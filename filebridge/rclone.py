@@ -6,8 +6,8 @@ import time
 from datetime import datetime
 from typing import Any
 
-from . import jobs
-from .common import FBError, find_tool, local_path, run_capture, split_location
+from . import jobs, policy
+from .common import FBError, find_tool, human_bytes as _human, local_path, run_capture, split_location
 
 _BWLIMIT_RE = re.compile(r"^\d+(\.\d+)?[bBkKMGTP]?$")
 _BASE = ["--ask-password=false"]
@@ -29,16 +29,19 @@ async def list_remotes() -> dict[str, str]:
     return remotes
 
 
-async def resolve(p: str, *, source: bool, remotes: dict[str, str] | None = None) -> tuple[str, str | None, str]:
-    """Return (argument for rclone, remote_type or None, display form)."""
+async def resolve(p: str, *, source: bool, remotes: dict[str, str] | None = None, action: str = "", destination: str = "") -> tuple[str, str | None, str]:
+    """Return (argument for rclone, remote_type or None, display form). A local source goes through the path policy."""
     name, rest = split_location(p)
     if name is None:
-        lp = local_path(p, must_exist=source, source=source)
+        if source:
+            real = (await policy.check_sources([p], action=action, destination=destination))[0]
+            return real, None, real
+        lp = local_path(p)
         return str(lp), None, str(lp)
     remotes = remotes if remotes is not None else await list_remotes()
     if name not in remotes:
         have = ", ".join(sorted(remotes)) or "none configured"
-        raise FBError(f"Unknown remote {name!r} (configured: {have}). Call setup_instructions() for the command the user must run to add one.")
+        raise FBError(f"Unknown remote {name!r} (configured: {have}). Call setup_instructions() for the command the user must run to add one.", "RemoteNotConfigured")
     return f"{name}:{rest}", remotes[name], f"{name}:{rest}"
 
 
@@ -51,14 +54,14 @@ async def start_transfer(
     src: str, dest: str, mode: str, dry_run: bool, overwrite: bool, confirm: bool, bwlimit: str | None, _extra: tuple[str, ...] = ()
 ) -> dict[str, Any]:
     if mode not in ("copy", "move", "sync"):
-        raise FBError("mode must be 'copy', 'move' or 'sync'.")
+        raise FBError("mode must be 'copy', 'move' or 'sync'.", "InvalidArgument")
     if bwlimit and not _BWLIMIT_RE.match(bwlimit):
-        raise FBError("bwlimit must look like '10M' or '500k' (bytes per second).")
+        raise FBError("bwlimit must look like '10M' or '500k' (bytes per second).", "InvalidArgument")
     remotes = await list_remotes()
-    s_arg, s_type, s_disp = await resolve(src, source=True, remotes=remotes)
     d_arg, d_type, d_disp = await resolve(dest, source=False, remotes=remotes)
+    s_arg, s_type, s_disp = await resolve(src, source=True, remotes=remotes, action=mode, destination=d_disp)
     if s_arg == d_arg:
-        raise FBError("Source and destination are the same.")
+        raise FBError("Source and destination are the same.", "InvalidArgument")
 
     if mode == "sync" and not dry_run and not confirm:
         recent = _recent_dry_run(s_disp, d_disp)
@@ -96,16 +99,6 @@ def _recent_dry_run(src: str, dest: str) -> bool:
             if datetime.fromisoformat(m["finished"]).timestamp() >= cutoff:
                 return True
     return False
-
-
-def _human(n: float | None) -> str | None:
-    if n is None:
-        return None
-    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
-        if abs(n) < 1024 or unit == "TiB":
-            return f"{n:.1f} {unit}" if unit != "B" else f"{int(n)} B"
-        n /= 1024
-    return None
 
 
 def parse_rclone_log(lines: list[str]) -> tuple[dict[str, Any] | None, list[str]]:
@@ -199,7 +192,7 @@ async def ls(remote_path: str, recursive: bool, max_items: int) -> dict[str, Any
 async def link(remote_path: str) -> dict[str, Any]:
     arg, rtype, disp = await resolve(remote_path, source=False)
     if rtype is None:
-        raise FBError("link needs a 'remote:path'; local paths have no shareable link.")
+        raise FBError("link needs a 'remote:path'; local paths have no shareable link.", "InvalidArgument")
     rc, out, err = await run_capture([rclone_bin(), "link", arg, *_BASE], timeout=120)
     if rc != 0:
         raise _run_failure(f"link {disp} (not every backend supports links)", rc, err)
