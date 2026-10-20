@@ -46,7 +46,7 @@ def snippet(urls: list[str], selector: str | None) -> str:
         "__fbRes={ok:true,action:'set',files:__fbDt.files.length,bytes:__fbBytes,target:__fbSel};}else{"
         "const t=document.elementFromPoint(innerWidth/2,innerHeight/2)||document.body;"
         "for(const ev of ['dragenter','dragover','drop']){t.dispatchEvent(new DragEvent(ev,{bubbles:true,cancelable:true,dataTransfer:__fbDt}));}"
-        "t.dispatchEvent(new DragEvent('dragleave',{bubbles:true}));"
+        "for(const x of [t,document.body,document.documentElement,document,window]){for(const ev of ['dragleave','dragend']){try{x.dispatchEvent(new DragEvent(ev,{bubbles:true,clientX:0,clientY:0}));}catch(e){}}}"
         "__fbRes={ok:true,action:'dropped',files:__fbDt.files.length,bytes:__fbBytes,target:t.tagName||'?'};}"
         "}catch(e){__fbRes={ok:false,code:e.fbCode||'Failed',message:e.message};}"
         "JSON.stringify(__fbRes);"
