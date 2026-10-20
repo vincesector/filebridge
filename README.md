@@ -1,12 +1,54 @@
 # filebridge
 
-**Upload any-size files into the browser you're already signed in to, from an AI agent.** An MCP server and CLI for
-Claude Code, Codex and friends that also moves files anywhere else: cloud storage through rclone, a headless upload
-browser, drives and the clipboard.
+<!-- mcp-name: io.github.vincesector/filebridge -->
+
+**Upload files larger than 10 MB from Claude Code, Codex or any AI agent into the browser you're already logged in to.**
+`browser_upload_own` (CLI: `filebridge serve`) gives your signed-in tab a one-time localhost link and a JavaScript
+snippet, and the page pulls the file from disk itself, so there is no size cap and nothing to sign in to again.
+
+Use it when Claude in Chrome's `file_upload` is not available or stops at 10 MB, when you need to attach a local file to
+an `<input type=file>` from an AI agent, or when a native file picker is in the way. The same MCP server and CLI also
+drive a headless browser (set files, drop files, intercepted file choosers) and move files to S3, R2, a NAS, Dropbox and
+the rest through rclone.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](pyproject.toml)
 [![MCP](https://img.shields.io/badge/MCP-server-purple.svg)](https://modelcontextprotocol.io)
+[![Website](https://img.shields.io/badge/site-filebridge.evinho.xyz-0a0c10.svg)](https://filebridge.evinho.xyz)
+
+```bash
+claude mcp add filebridge --scope user -- uvx --from git+https://github.com/vincesector/filebridge filebridge mcp
+```
+
+## For AI agents
+
+Paste this into your `CLAUDE.md` or `AGENTS.md` so the agent reaches for filebridge instead of the file picker:
+
+```markdown
+## File uploads: use filebridge
+When a local file must be uploaded or attached to a website (Drive, X, Typefully, any form), do not use the native
+file picker or the browser extension's file upload (about 10 MB cap). Use the filebridge MCP tools:
+- Site the user is signed in to in their own browser: `browser_upload_own(paths=[...], verify_text="<file name>")`,
+  then run the returned `snippet` in that tab with the browser extension's JavaScript tool, exactly as returned (it
+  uses top-level await). It returns JSON `{ok, ...}`. Then run `verify_snippet` and check `serve_status(server_id)`.
+  Each link works once: after `LinkUsed` or `FetchBlocked`, call `browser_upload_own` again.
+- Automation browser or an attached Chrome/Brave: `browser_snapshot(tab)`, then `browser_set_files(ref=...)` for a
+  file input, `browser_drop_files(ref=...)` for a drop zone, `browser_click(ref=..., files=[...])` for an upload button.
+- Cloud or NAS with an rclone remote: `transfer(src, "remote:folder")`, then poll `job_status(job_id)`.
+- `PathNotAllowed`: ask the user to approve, or to add the folder to `allowed_roots` in `~/.filebridge/config.toml`.
+  `PathBlocked` means a credential file: never work around it.
+```
+
+Claude Code users can install the matching skill instead (it triggers on "upload/attach this file to <site>"):
+
+```bash
+mkdir -p ~/.claude/skills/upload-file-to-website
+curl -fsSL https://raw.githubusercontent.com/vincesector/filebridge/main/skills/upload-file-to-website/SKILL.md \
+  -o ~/.claude/skills/upload-file-to-website/SKILL.md
+```
+
+From a clone: `cp -r skills/upload-file-to-website ~/.claude/skills/`. A plain-text summary for LLMs is at
+[llms.txt](llms.txt), and every tool is described in [llms-full.txt](llms-full.txt).
 
 ## Why
 
@@ -201,7 +243,7 @@ return a job id; add `--wait` to block until done.
 | `filebridge link PATH` | Shareable link for a remote file or folder |
 | `filebridge mkdir PATH` | Create a remote folder |
 | `filebridge stat PATH` | Does a remote path exist; size and type |
-| `filebridge setup [BACKEND]` | Exact commands to add a remote (drive, dropbox, onedrive, icloud, s3, r2, sftp) |
+| `filebridge setup [BACKEND]` | Exact commands to add a remote (dropbox, onedrive, icloud, s3, r2, sftp) |
 | `filebridge copy SRC DEST [--overwrite] [--dry-run] [--wait]` | Local rsync copy as a background job |
 | `filebridge clipboard PATH...` | Put files on the clipboard as file references |
 | `filebridge reveal PATH` | Show a path in Finder / the file manager (opens a window) |

@@ -1,0 +1,31 @@
+# filebridge
+
+> MCP server and CLI that lets AI agents (Claude Code, Codex, any MCP client) upload local files of any size into the browser you are already signed in to, attach files to headless-browser file inputs and drop zones, and move files to cloud storage or a NAS with rclone. MIT, Python 3.12+, tested on macOS.
+
+Use filebridge when an agent must upload or attach a local file to a website and the browser extension's upload tool is unavailable or capped at about 10 MB, when a native file picker is in the way, or when a headless browser has no logins. Every path hands real disk paths to something that reads the file itself, so there is no size cap. Files outside the user's allowed folders need their approval; credential files are always refused.
+
+## Install
+
+- Claude Code: `claude mcp add filebridge --scope user -- uvx --from git+https://github.com/vincesector/filebridge filebridge mcp`
+- Codex (`~/.codex/config.toml`): `[mcp_servers.filebridge]` with `command = "uvx"` and `args = ["--from", "git+https://github.com/vincesector/filebridge", "filebridge", "mcp"]`
+- Upload tools only (less context): add `--slim` after `mcp`.
+- CLI without MCP: `uvx --from git+https://github.com/vincesector/filebridge filebridge --help`
+
+## Recipes
+
+- Upload any-size file into your own signed-in browser (Drive, X, Typefully, a form): call `browser_upload_own(paths=["~/Movies/final.mp4"], verify_text="final.mp4")`. Run the returned `snippet` in that tab with a JavaScript tool (for example Claude in Chrome's javascript tool), exactly as returned: it uses top-level await and returns a JSON string `{ok, action, files, bytes}` or `{ok:false, code, message}`. Then run `verify_snippet` and check `serve_status(server_id)`. Each link works once; on `LinkUsed` or `FetchBlocked` call `browser_upload_own` again. CLI: `filebridge serve ~/Movies/final.mp4`.
+- Headless browser, set files or drop: `browser_launch(url=...)`, `browser_snapshot(tab)` for refs like `e12`, then `browser_set_files(tab, paths, ref=...)` for an `<input type=file>`, `browser_drop_files(tab, paths, ref=...)` for a drop zone, or `browser_click(tab, ref=..., files=[...])` for an upload button that opens a file picker. Sign in once with `browser_launch(mode="visible")` if the site needs a login, or attach to your own Chrome/Brave with `browser_launch(mode="attach")`.
+- rclone transfer to S3, R2, SFTP/NAS, Dropbox, OneDrive: `remotes()`, then `transfer("~/Videos/final.mp4", "nas:uploads")` returns a `job_id`; poll `job_status(job_id)`. Missing remote: `setup_instructions(backend)` gives the command the user runs.
+
+## Docs
+
+- [README](https://github.com/vincesector/filebridge/blob/main/README.md): install, quickstart, CLI reference, MCP tools, error codes, security model
+- [Full tool reference](https://filebridge.evinho.xyz/llms-full.txt): every MCP tool with arguments and gotchas
+- [Agent skill](https://github.com/vincesector/filebridge/blob/main/skills/upload-file-to-website/SKILL.md): Claude Code skill for "upload this file to a website"
+- [Design notes](https://github.com/vincesector/filebridge/blob/main/docs/DESIGN.md): the four paths and the decisions behind them
+- [Changelog](https://github.com/vincesector/filebridge/blob/main/CHANGELOG.md)
+
+## Optional
+
+- [Live test checklist](https://github.com/vincesector/filebridge/blob/main/docs/LIVE_TESTS.md): manual checks against real sites
+- [Homepage](https://filebridge.evinho.xyz)

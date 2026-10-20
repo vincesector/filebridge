@@ -1,0 +1,566 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>filebridge: upload any-size files from AI agents</title>
+<meta name="description" content="Upload files larger than 10 MB from Claude Code or Codex into the browser you are already signed in to. filebridge is an open-source MCP server and CLI that can attach a local file to an input type=file, with no size cap.">
+<link rel="canonical" href="https://filebridge.evinho.xyz/">
+<meta name="theme-color" content="#0a0c10">
+<meta name="color-scheme" content="dark">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230a0c10'/%3E%3Cpath d='M10 40h44M18 40V28m14 12V28m14 12V28M10 28c8-12 36-12 44 0' fill='none' stroke='%235eead4' stroke-width='5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+
+<meta property="og:title" content="filebridge: upload any-size files from AI agents">
+<meta property="og:description" content="Upload any-size files into the browser you're already signed in to, from an AI agent. Open-source MCP server and CLI for Claude Code and Codex.">
+<meta property="og:url" content="https://filebridge.evinho.xyz/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="filebridge">
+<meta property="og:image" content="https://filebridge.evinho.xyz/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="filebridge: upload any-size files into the browser you're already signed in to, from an AI agent.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="filebridge: upload any-size files from AI agents">
+<meta name="twitter:description" content="Upload any-size files into the browser you're already signed in to, from an AI agent.">
+<meta name="twitter:image" content="https://filebridge.evinho.xyz/og.png">
+<meta name="twitter:image:alt" content="filebridge: upload any-size files into the browser you're already signed in to, from an AI agent.">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "filebridge",
+  "description": "Open-source MCP server and CLI that lets AI agents such as Claude Code and Codex upload files of any size into the browser you are already signed in to, to cloud storage through rclone, and to drives or the clipboard.",
+  "url": "https://filebridge.evinho.xyz/",
+  "codeRepository": "https://github.com/vincesector/filebridge",
+  "license": "https://opensource.org/licenses/MIT",
+  "operatingSystem": "macOS",
+  "programmingLanguage": "Python",
+  "applicationCategory": "DeveloperApplication",
+  "softwareVersion": "0.2.0",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "Why not just use the browser extension's upload tool?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "It caps files at about 10 MB. browser_upload_own exists for exactly that case: your signed-in tab pulls the file from localhost, no extension cap involved."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does it work with Claude in Chrome?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. browser_upload_own returns a JavaScript snippet, and the agent runs it in your signed-in tab with the extension's JavaScript tool. The tab fetches the file from localhost, so the extension's size cap does not apply."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does set_files really have no size limit?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "The browser reads the file from disk itself. A 300 MB file went through every browser path with a matching page-side SHA-256."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Will a window pop up on my screen?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Not unless you launch with --visible, attach to your own browser, or call reveal. The automation browser runs --headless=new."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can I use it without MCP?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes, every action is a CLI command, so scripts and cron/launchd jobs can use it."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Do I need rclone?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Only for transfer, remotes, ls, link, mkdir, stat and setup_instructions."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Why does it ask me before uploading a file?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "The file is outside your allowed folders. Add the folder to allowed_roots in ~/.filebridge/config.toml to stop the questions for it."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does it run on Linux or Windows?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "It is developed and tested on macOS. Linux and Windows support is best effort and untested."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can the agent delete my files?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "There is no delete tool, by design. A move removes the source only after rclone verified the copy, and a sync can delete on the destination but requires a prior dry run or confirm=true."
+      }
+    }
+  ]
+}
+</script>
+
+<style>
+:root{
+  --bg:#0a0c10;
+  --surface:#11151b;
+  --surface-2:#171c24;
+  --border:#2f3846;
+  --text:#e8ecf2;
+  --muted:#a3adbb;
+  --accent:#5eead4;
+  --on-accent:#06201c;
+  --line:#7c8899;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:auto;-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);font-size:1.0625rem;line-height:1.6;-webkit-font-smoothing:antialiased}
+img,svg{max-width:100%}
+a{color:var(--accent);text-underline-offset:.2em}
+a:hover{text-decoration-thickness:2px}
+:focus-visible{outline:3px solid var(--accent);outline-offset:3px;border-radius:4px}
+code,pre,kbd{font-family:var(--mono)}
+code{font-size:.9em;background:var(--surface-2);border:1px solid var(--border);border-radius:5px;padding:.1em .38em;overflow-wrap:anywhere}
+pre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}
+pre code{background:none;border:0;padding:0;font-size:.9rem}
+.wrap{width:100%;max-width:1080px;margin:0 auto;padding:0 20px}
+.skip{position:absolute;left:12px;top:-60px;background:var(--accent);color:var(--on-accent);padding:10px 16px;border-radius:8px;font-weight:600;z-index:10;text-decoration:none}
+.skip:focus{top:12px}
+
+header.top{border-bottom:1px solid var(--border)}
+header.top .wrap{display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:64px}
+.brand{font-family:var(--mono);font-weight:700;font-size:1.125rem;color:var(--text);text-decoration:none;letter-spacing:-.01em}
+.brand span{color:var(--accent)}
+nav ul{list-style:none;margin:0;padding:0;display:flex;gap:4px 18px;flex-wrap:wrap;justify-content:flex-end}
+nav a{color:var(--muted);text-decoration:none;font-size:.95rem;padding:6px 2px;display:inline-block}
+nav a:hover{color:var(--text);text-decoration:underline}
+
+.hero{padding:72px 0 64px}
+.eyebrow{font-family:var(--mono);font-size:.85rem;color:var(--muted);margin:0 0 20px;display:flex;flex-wrap:wrap;gap:6px 14px}
+.eyebrow span+span::before{content:"/";margin-right:14px;color:var(--line)}
+h1{font-size:clamp(2rem,5.2vw,3.5rem);line-height:1.1;letter-spacing:-.025em;margin:0 0 22px;max-width:21ch;text-wrap:balance}
+h1 em{font-style:normal;color:var(--accent)}
+.lede{font-size:1.2rem;color:var(--muted);max-width:60ch;margin:0 0 32px}
+.install{background:var(--surface);border:1px solid var(--border);border-radius:12px;max-width:760px}
+.install-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 14px 10px 18px;border-bottom:1px solid var(--border);font-size:.85rem;color:var(--muted)}
+.install-body{padding:16px 18px}
+.copy{font:inherit;font-size:.85rem;font-weight:600;color:var(--text);background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:6px 14px;cursor:pointer;min-height:36px}
+.copy:hover{border-color:var(--accent)}
+.actions{display:flex;flex-wrap:wrap;gap:12px;margin-top:24px}
+.btn{display:inline-flex;align-items:center;min-height:44px;padding:0 20px;border-radius:10px;font-weight:600;text-decoration:none;border:1px solid var(--border);color:var(--text);background:var(--surface)}
+.btn:hover{border-color:var(--accent);text-decoration:none}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.btn.primary:hover{background:#8ff3e3}
+.fine{font-size:.9rem;color:var(--muted);margin:16px 0 0}
+
+section{padding:64px 0;border-top:1px solid var(--border)}
+h2{font-size:clamp(1.55rem,3.4vw,2.2rem);line-height:1.2;letter-spacing:-.02em;margin:0 0 14px}
+h3{font-size:1.15rem;line-height:1.3;margin:0 0 8px}
+.sub{color:var(--muted);max-width:62ch;margin:0 0 36px}
+.grid{display:grid;gap:16px}
+.g3{grid-template-columns:repeat(3,1fr)}
+.g2{grid-template-columns:repeat(2,1fr)}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px}
+.card p{margin:0;color:var(--muted)}
+.card p+p{margin-top:10px}
+.num{font-family:var(--mono);font-size:.85rem;color:var(--accent);display:block;margin-bottom:8px}
+
+.diagram{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px;margin:0 0 28px}
+.diagram svg{display:block;width:100%;height:auto}
+.diagram .dia-m{display:none;max-width:420px;margin:0 auto}
+.box{fill:var(--surface-2);stroke:var(--border);stroke-width:1.5}
+.box-hi{fill:#10302e;stroke:var(--accent);stroke-width:1.5}
+.t-title{fill:var(--text);font-family:var(--mono);font-size:15px;font-weight:600}
+.t-sub{fill:var(--muted);font-family:var(--sans);font-size:13px}
+.dia-m .t-title{font-size:13px}.dia-m .t-sub{font-size:12px}
+.t-hi{fill:var(--accent)}
+.arrow{stroke:var(--line);stroke-width:1.6;fill:none}
+.ah{fill:var(--line)}
+.path-list{list-style:none;margin:0;padding:0}
+.path-list li{display:flex;flex-direction:column}
+
+.safety li{margin:0 0 14px;color:var(--muted)}
+.safety li strong{color:var(--text)}
+.safety ul{margin:0;padding-left:1.2em}
+.note{margin-top:20px;color:var(--muted);font-size:.95rem}
+
+.step{margin:0 0 28px}
+.step h3{margin-bottom:10px}
+.codeblock{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 18px;margin:10px 0}
+.step p{color:var(--muted);margin:10px 0}
+.step p code{color:var(--text)}
+
+details{background:var(--surface);border:1px solid var(--border);border-radius:12px;margin:0 0 10px}
+summary{cursor:pointer;padding:16px 20px;font-weight:600;list-style:none;display:flex;justify-content:space-between;gap:16px;align-items:center;min-height:56px}
+summary::-webkit-details-marker{display:none}
+summary::after{content:"+";font-family:var(--mono);font-size:1.3rem;color:var(--accent);flex:none}
+details[open] summary::after{content:"\2212"}
+details p{margin:0;padding:0 20px 18px;color:var(--muted)}
+
+footer{border-top:1px solid var(--border);padding:40px 0 56px;color:var(--muted);font-size:.95rem}
+footer .wrap{display:flex;flex-wrap:wrap;justify-content:space-between;gap:20px}
+footer ul{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:6px 20px}
+footer a{display:inline-block;padding:4px 0}
+
+@media (prefers-reduced-motion:no-preference){
+  .btn,.copy,nav a{transition:background-color .15s,border-color .15s,color .15s}
+}
+@media (max-width:860px){
+  .g3,.g2{grid-template-columns:1fr}
+  .hero{padding:48px 0 48px}
+  section{padding:48px 0}
+  .diagram .dia-d{display:none}
+  .diagram .dia-m{display:block}
+  nav ul{gap:0 14px}
+}
+@media (max-width:520px){
+  .wrap{padding:0 16px}
+  header.top .wrap{flex-direction:column;align-items:flex-start;padding-top:12px;padding-bottom:8px;gap:2px}
+  nav ul{justify-content:flex-start}
+  .install-head{flex-wrap:wrap}
+  .eyebrow span+span::before{content:none}
+  .diagram{padding:12px}
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to main content</a>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="/" aria-label="filebridge home">file<span>bridge</span></a>
+    <nav aria-label="Primary">
+      <ul>
+        <li><a href="#problem">Problem</a></li>
+        <li><a href="#how">How it works</a></li>
+        <li><a href="#safety">Safety</a></li>
+        <li><a href="#quickstart">Quickstart</a></li>
+        <li><a href="#faq">FAQ</a></li>
+        <li><a href="https://github.com/vincesector/filebridge">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+  <div class="hero">
+    <div class="wrap">
+      <p class="eyebrow"><span>MCP server and CLI</span><span>MIT</span><span>Python 3.12+</span><span>v0.2.0</span></p>
+      <h1>Upload any-size files into the browser you're <em>already signed in to</em>, from an AI agent.</h1>
+      <p class="lede">filebridge is an MCP server and CLI for Claude Code, Codex and friends. Upload files larger than 10 MB from Claude Code, attach a local file to an <code>&lt;input type=file&gt;</code> when Claude in Chrome's <code>file_upload</code> is not available, and move files anywhere else: cloud storage through rclone, a headless upload browser, drives and the clipboard.</p>
+
+      <div class="install" id="install">
+        <div class="install-head"><span id="install-label">Add it to Claude Code</span></div>
+        <div class="install-body"><pre><code id="install-cmd" aria-labelledby="install-label">claude mcp add filebridge --scope user -- uvx --from git+https://github.com/vincesector/filebridge filebridge mcp</code></pre></div>
+      </div>
+      <div class="actions">
+        <a class="btn primary" href="https://github.com/vincesector/filebridge">View on GitHub</a>
+        <a class="btn" href="#quickstart">Codex setup and first upload</a>
+      </div>
+      <p class="fine">Nothing to install up front: <code>uvx</code> runs it. Developed and tested on macOS. Linux and Windows are best effort and untested.</p>
+    </div>
+  </div>
+
+  <section id="problem" aria-labelledby="problem-h">
+    <div class="wrap">
+      <h2 id="problem-h">"Upload this video to my Drive" fails for agents in three boring ways</h2>
+      <p class="sub">filebridge hands real disk paths to something that reads the file itself, so there is no size cap.</p>
+      <div class="grid g3">
+        <div class="card">
+          <h3>Extension uploads stop at about 10 MB</h3>
+          <p>The file is pushed through the extension instead of being read from disk, so big files do not fit.</p>
+        </div>
+        <div class="card">
+          <h3>Headless browsers have no logins</h3>
+          <p>A fresh automation browser is signed out of everything you use.</p>
+        </div>
+        <div class="card">
+          <h3>Native file pickers cannot be driven</h3>
+          <p>There is nothing for an agent to click, and dragging a file from Finder is not possible.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="how" aria-labelledby="how-h">
+    <div class="wrap">
+      <h2 id="how-h">Four paths around the problem</h2>
+      <p class="sub">The agent calls filebridge over MCP or the CLI. filebridge picks the path that fits where the file needs to go.</p>
+
+      <figure class="diagram" style="margin-left:0;margin-right:0">
+        <svg class="dia-d" viewBox="0 0 960 420" role="img" aria-labelledby="dd-t dd-d" xmlns="http://www.w3.org/2000/svg">
+          <title id="dd-t">How filebridge connects an agent to four upload paths</title>
+          <desc id="dd-d">An agent such as Claude Code or Codex calls filebridge. filebridge offers four paths. One: browser_upload_own, with one-time localhost links and a JavaScript snippet, ending at a website upload form in your signed-in browser. Two: a CDP browser that sets files, drops files or clicks, ending at a website upload form. Three: rclone transfer, ending at cloud storage or a NAS. Four: local helpers, rsync copy and clipboard files, ending at drives and desktop apps.</desc>
+          <defs><marker id="mh1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10z" class="ah"/></marker></defs>
+          <rect class="box" x="10" y="160" width="160" height="100" rx="12"/>
+          <text class="t-title" x="90" y="203" text-anchor="middle">Agent</text>
+          <text class="t-sub" x="90" y="227" text-anchor="middle">Claude Code, Codex</text>
+          <path class="arrow" d="M170 210H210" marker-end="url(#mh1)"/>
+          <rect class="box-hi" x="212" y="160" width="160" height="100" rx="12"/>
+          <text class="t-title t-hi" x="292" y="203" text-anchor="middle">filebridge</text>
+          <text class="t-sub" x="292" y="227" text-anchor="middle">MCP tools or CLI</text>
+
+          <path class="arrow" d="M372 210C400 210 400 48 432 48" marker-end="url(#mh1)"/>
+          <path class="arrow" d="M372 210C400 210 400 156 432 156" marker-end="url(#mh1)"/>
+          <path class="arrow" d="M372 210C400 210 400 264 432 264" marker-end="url(#mh1)"/>
+          <path class="arrow" d="M372 210C400 210 400 372 432 372" marker-end="url(#mh1)"/>
+
+          <rect class="box" x="434" y="10" width="260" height="76" rx="12"/>
+          <text class="t-title" x="450" y="36">1 browser_upload_own</text>
+          <text class="t-sub" x="450" y="56">one-time localhost links</text>
+          <text class="t-sub" x="450" y="73">+ JS snippet into YOUR browser</text>
+          <rect class="box" x="434" y="118" width="260" height="76" rx="12"/>
+          <text class="t-title" x="450" y="144">2 CDP browser</text>
+          <text class="t-sub" x="450" y="164">set files / drop files / click</text>
+          <text class="t-sub" x="450" y="181">dedicated profile or attach</text>
+          <rect class="box" x="434" y="226" width="260" height="76" rx="12"/>
+          <text class="t-title" x="450" y="252">3 rclone transfer</text>
+          <text class="t-sub" x="450" y="272">copy, move, sync to a</text>
+          <text class="t-sub" x="450" y="289">configured remote</text>
+          <rect class="box" x="434" y="334" width="260" height="76" rx="12"/>
+          <text class="t-title" x="450" y="360">4 local helpers</text>
+          <text class="t-sub" x="450" y="380">rsync copy</text>
+          <text class="t-sub" x="450" y="397">clipboard files</text>
+
+          <path class="arrow" d="M694 48H742" marker-end="url(#mh1)"/>
+          <path class="arrow" d="M694 156H742" marker-end="url(#mh1)"/>
+          <path class="arrow" d="M694 264H742" marker-end="url(#mh1)"/>
+          <path class="arrow" d="M694 372H742" marker-end="url(#mh1)"/>
+
+          <rect class="box" x="744" y="10" width="206" height="76" rx="12"/>
+          <text class="t-title" x="758" y="38" style="font-family:var(--sans);font-size:14px">Website upload form</text>
+          <text class="t-sub" x="758" y="60">in your signed-in browser</text>
+          <rect class="box" x="744" y="118" width="206" height="76" rx="12"/>
+          <text class="t-title" x="758" y="146" style="font-family:var(--sans);font-size:14px">Website upload form</text>
+          <text class="t-sub" x="758" y="168">headless, or your Chrome</text>
+          <rect class="box" x="744" y="226" width="206" height="76" rx="12"/>
+          <text class="t-title" x="758" y="254" style="font-family:var(--sans);font-size:14px">Cloud storage or NAS</text>
+          <text class="t-sub" x="758" y="276">S3, R2, SFTP, Drive,</text>
+          <text class="t-sub" x="758" y="293">Dropbox, OneDrive</text>
+          <rect class="box" x="744" y="334" width="206" height="76" rx="12"/>
+          <text class="t-title" x="758" y="362" style="font-family:var(--sans);font-size:14px">Drives and desktop apps</text>
+          <text class="t-sub" x="758" y="384">iCloud Drive folder,</text>
+          <text class="t-sub" x="758" y="401">Slack / Finder via Cmd+V</text>
+        </svg>
+
+        <svg class="dia-m" viewBox="0 0 360 660" role="img" aria-labelledby="dm-t dm-d" xmlns="http://www.w3.org/2000/svg">
+          <title id="dm-t">How filebridge connects an agent to four upload paths</title>
+          <desc id="dm-d">An agent such as Claude Code or Codex calls filebridge. filebridge offers four paths. One: browser_upload_own, ending at a website upload form in your signed-in browser. Two: a CDP browser, ending at a website upload form. Three: rclone transfer, ending at cloud storage or a NAS. Four: local helpers, ending at drives and desktop apps.</desc>
+          <defs><marker id="mh2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10z" class="ah"/></marker></defs>
+          <rect class="box" x="90" y="6" width="180" height="56" rx="12"/>
+          <text class="t-title" x="180" y="30" text-anchor="middle">Agent</text>
+          <text class="t-sub" x="180" y="50" text-anchor="middle">Claude Code, Codex</text>
+          <path class="arrow" d="M180 62V90" marker-end="url(#mh2)"/>
+          <rect class="box-hi" x="90" y="92" width="180" height="56" rx="12"/>
+          <text class="t-title t-hi" x="180" y="116" text-anchor="middle">filebridge</text>
+          <text class="t-sub" x="180" y="136" text-anchor="middle">MCP tools or CLI</text>
+          <path class="arrow" d="M180 148V172H14V240"/>
+          <path class="arrow" d="M14 172V500"/>
+          <path class="arrow" d="M14 240H30" marker-end="url(#mh2)"/>
+          <path class="arrow" d="M14 352H30" marker-end="url(#mh2)"/>
+          <path class="arrow" d="M14 464H30" marker-end="url(#mh2)"/>
+          <path class="arrow" d="M14 576H30" marker-end="url(#mh2)"/>
+          <path class="arrow" d="M14 500V576"/>
+
+          <rect class="box" x="32" y="192" width="170" height="96" rx="12"/>
+          <text class="t-title" x="44" y="216">browser_upload_own</text>
+          <text class="t-sub" x="44" y="238">one-time localhost links</text>
+          <text class="t-sub" x="44" y="256">+ JS snippet into</text>
+          <text class="t-sub" x="44" y="274">YOUR browser</text>
+          <rect class="box" x="32" y="304" width="170" height="96" rx="12"/>
+          <text class="t-title" x="44" y="328">CDP browser</text>
+          <text class="t-sub" x="44" y="350">set files / drop files</text>
+          <text class="t-sub" x="44" y="368">/ click, headless</text>
+          <text class="t-sub" x="44" y="386">or attached</text>
+          <rect class="box" x="32" y="416" width="170" height="96" rx="12"/>
+          <text class="t-title" x="44" y="440">rclone transfer</text>
+          <text class="t-sub" x="44" y="462">copy, move, sync to a</text>
+          <text class="t-sub" x="44" y="480">configured remote</text>
+          <rect class="box" x="32" y="528" width="170" height="96" rx="12"/>
+          <text class="t-title" x="44" y="552">local helpers</text>
+          <text class="t-sub" x="44" y="574">rsync copy</text>
+          <text class="t-sub" x="44" y="592">clipboard files</text>
+
+          <path class="arrow" d="M202 240H214" marker-end="url(#mh2)"/>
+          <path class="arrow" d="M202 352H214" marker-end="url(#mh2)"/>
+          <path class="arrow" d="M202 464H214" marker-end="url(#mh2)"/>
+          <path class="arrow" d="M202 576H214" marker-end="url(#mh2)"/>
+          <rect class="box" x="216" y="192" width="138" height="96" rx="12"/>
+          <text class="t-sub" x="226" y="226" style="fill:var(--text)">Website upload</text>
+          <text class="t-sub" x="226" y="244" style="fill:var(--text)">form</text>
+          <text class="t-sub" x="226" y="266">your signed-in tab</text>
+          <rect class="box" x="216" y="304" width="138" height="96" rx="12"/>
+          <text class="t-sub" x="226" y="338" style="fill:var(--text)">Website upload</text>
+          <text class="t-sub" x="226" y="356" style="fill:var(--text)">form</text>
+          <text class="t-sub" x="226" y="378">headless or yours</text>
+          <rect class="box" x="216" y="416" width="138" height="96" rx="12"/>
+          <text class="t-sub" x="226" y="450" style="fill:var(--text)">Cloud or NAS</text>
+          <text class="t-sub" x="226" y="472">S3, R2, SFTP,</text>
+          <text class="t-sub" x="226" y="490">Drive, Dropbox</text>
+          <rect class="box" x="216" y="528" width="138" height="96" rx="12"/>
+          <text class="t-sub" x="226" y="562" style="fill:var(--text)">Drives, apps</text>
+          <text class="t-sub" x="226" y="584">iCloud Drive folder,</text>
+          <text class="t-sub" x="226" y="602">Cmd+V into apps</text>
+        </svg>
+        <figcaption class="note" style="margin-top:14px">Every path passes real disk paths to the thing that reads the file, so no size cap applies.</figcaption>
+      </figure>
+
+      <div class="grid g2">
+        <div class="card">
+          <span class="num">Path 1</span>
+          <h3>Your own signed-in browser</h3>
+          <p><code>browser_upload_own</code> (CLI: <code>filebridge serve</code>) starts a server on <code>127.0.0.1</code> and returns one-time links plus a JavaScript snippet. The agent runs the snippet in your signed-in tab. The page fetches each file from localhost, then fills the <code>&lt;input type=file&gt;</code> or drops the files on the page.</p>
+        </div>
+        <div class="card">
+          <span class="num">Path 2</span>
+          <h3>CDP browser</h3>
+          <p><code>browser_set_files</code>, <code>browser_drop_files</code> and <code>browser_click(files=...)</code> hand disk paths to the browser over DevTools, and a file chooser is intercepted so a native picker never appears. Use the dedicated headless profile, or attach to your own Chrome or Brave.</p>
+        </div>
+        <div class="card">
+          <span class="num">Path 3</span>
+          <h3>rclone transfer</h3>
+          <p><code>transfer</code> copies, moves or syncs between local paths and any rclone remote: S3, R2, SFTP/NAS, Drive, Dropbox, OneDrive. It runs as a background job you can check on. Needs a remote that a human configured.</p>
+        </div>
+        <div class="card">
+          <span class="num">Path 4</span>
+          <h3>Local helpers</h3>
+          <p><code>local_copy</code> runs an rsync copy to a drive, NAS mount or iCloud Drive folder. <code>clipboard_files</code> puts files on the clipboard so you can paste them into Slack, Telegram, Mail or Finder with Cmd+V.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="safety" aria-labelledby="safety-h">
+    <div class="wrap">
+      <h2 id="safety-h">Safety</h2>
+      <p class="sub">Every tool that reads a local file resolves the real path, following symlinks, and checks it against <code>~/.filebridge/config.toml</code>.</p>
+      <div class="grid g2">
+        <div class="card">
+          <h3>Allowed folders</h3>
+          <p>Files inside <code>allowed_roots</code> go through. The defaults are <code>~/Projects</code>, <code>~/Movies</code>, <code>~/Downloads</code>, <code>~/Documents</code> and the folder your client started in.</p>
+        </div>
+        <div class="card">
+          <h3>Approval for everything else</h3>
+          <p>A file outside those folders triggers an approval prompt through MCP elicitation. Say yes and that one call proceeds. Say no, or use a client that cannot ask, and you get <code>PathNotAllowed</code>.</p>
+        </div>
+        <div class="card">
+          <h3>A hard denylist</h3>
+          <p>Paths such as <code>.ssh</code>, <code>.env</code>, keys and browser cookies are refused with <code>PathBlocked</code>. Approval cannot lift it, and the built-in patterns apply even if you delete them from the config.</p>
+        </div>
+        <div class="card">
+          <h3>Single-use links on localhost</h3>
+          <p>The server binds <code>127.0.0.1</code> only. Every URL carries a random token and works exactly once. The server stops when every file was fetched or the TTL runs out (default 1800 s).</p>
+        </div>
+      </div>
+      <p class="note"><strong>No delete tool, by design.</strong> A move removes the source only after rclone verified the copy, and a sync needs a prior dry run or <code>confirm=true</code>. One caveat: a client in a bypass-permissions mode may auto-accept approval prompts, so treat the allowlist as a convenience and the denylist as the hard floor.</p>
+    </div>
+  </section>
+
+  <section id="quickstart" aria-labelledby="qs-h">
+    <div class="wrap">
+      <h2 id="qs-h">Quickstart</h2>
+      <p class="sub">Requires Python 3.12+, and uv installs one if needed. Optional: rclone for <code>transfer</code>, Brave or Chrome for the browser tools.</p>
+
+      <div class="step">
+        <h3>Claude Code</h3>
+        <div class="codeblock"><pre><code>claude mcp add filebridge --scope user -- uvx --from git+https://github.com/vincesector/filebridge filebridge mcp</code></pre></div>
+        <p>Only need uploads? Add <code>--slim</code> after <code>mcp</code> to expose just the upload tools and save context. With <code>uv tool install</code>, the command is just <code>filebridge mcp</code>.</p>
+      </div>
+
+      <div class="step">
+        <h3>Codex</h3>
+        <p>In <code>~/.codex/config.toml</code>:</p>
+        <div class="codeblock"><pre><code>[mcp_servers.filebridge]
+command = "uvx"
+args = ["--from", "git+https://github.com/vincesector/filebridge", "filebridge", "mcp"]</code></pre></div>
+      </div>
+
+      <div class="step">
+        <h3>First upload</h3>
+        <p>Ask the agent: <code>upload ~/Movies/final.mp4 to my Drive</code>. It calls <code>browser_upload_own</code>, gets one-time links and a snippet, and runs the snippet in your signed-in tab with any tool that can execute JavaScript there, for example the Claude in Chrome extension's JavaScript tool.</p>
+        <p>The same from the CLI. It prints the URLs and snippet, and exits once every file was fetched:</p>
+        <div class="codeblock"><pre><code>filebridge serve ~/Movies/final.mp4</code></pre></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="faq" aria-labelledby="faq-h">
+    <div class="wrap">
+      <h2 id="faq-h">FAQ</h2>
+      <div style="margin-top:28px">
+        <details><summary>Why not just use the browser extension's upload tool?</summary><p>It caps files at about 10 MB. browser_upload_own exists for exactly that case: your signed-in tab pulls the file from localhost, no extension cap involved.</p></details>
+        <details><summary>Does it work with Claude in Chrome?</summary><p>Yes. browser_upload_own returns a JavaScript snippet, and the agent runs it in your signed-in tab with the extension's JavaScript tool. The tab fetches the file from localhost, so the extension's size cap does not apply.</p></details>
+        <details><summary>Does set_files really have no size limit?</summary><p>The browser reads the file from disk itself. A 300 MB file went through every browser path with a matching page-side SHA-256.</p></details>
+        <details><summary>Will a window pop up on my screen?</summary><p>Not unless you launch with --visible, attach to your own browser, or call reveal. The automation browser runs --headless=new.</p></details>
+        <details><summary>Can I use it without MCP?</summary><p>Yes, every action is a CLI command, so scripts and cron/launchd jobs can use it.</p></details>
+        <details><summary>Do I need rclone?</summary><p>Only for transfer, remotes, ls, link, mkdir, stat and setup_instructions.</p></details>
+        <details><summary>Why does it ask me before uploading a file?</summary><p>The file is outside your allowed folders. Add the folder to allowed_roots in ~/.filebridge/config.toml to stop the questions for it.</p></details>
+        <details><summary>Does it run on Linux or Windows?</summary><p>It is developed and tested on macOS. Linux and Windows support is best effort and untested.</p></details>
+        <details><summary>Can the agent delete my files?</summary><p>There is no delete tool, by design. A move removes the source only after rclone verified the copy, and a sync can delete on the destination but requires a prior dry run or confirm=true.</p></details>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div>
+      <p style="margin:0 0 6px"><strong style="color:var(--text)">filebridge</strong> v0.2.0, MIT licensed.</p>
+      <p style="margin:0">Developed and tested on macOS. Linux and Windows are best effort and untested.</p>
+    </div>
+    <nav aria-label="Footer">
+      <ul>
+        <li><a href="https://github.com/vincesector/filebridge">GitHub</a></li>
+        <li><a href="https://github.com/vincesector/filebridge/blob/main/LICENSE">MIT license</a></li>
+        <li><a href="/llms.txt">llms.txt</a></li>
+        <li><a href="/llms-full.txt">llms-full.txt</a></li>
+      </ul>
+    </nav>
+  </div>
+</footer>
+
+<script>
+(function(){
+  var cmd=document.getElementById('install-cmd');
+  var head=document.querySelector('.install-head');
+  if(!cmd||!head)return;
+  var b=document.createElement('button');
+  b.type='button';b.className='copy';b.textContent='Copy';
+  b.setAttribute('aria-label','Copy install command');
+  b.addEventListener('click',function(){
+    var t=cmd.textContent;
+    function done(ok){b.textContent=ok?'Copied':'Press Ctrl+C';setTimeout(function(){b.textContent='Copy'},2000)}
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+      navigator.clipboard.writeText(t).then(function(){done(true)},function(){sel()});
+    }else sel();
+    function sel(){var r=document.createRange();r.selectNodeContents(cmd);var s=getSelection();s.removeAllRanges();s.addRange(r);done(false)}
+  });
+  head.appendChild(b);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,407 @@
+# filebridge
+
+> MCP server and CLI that lets AI agents (Claude Code, Codex, any MCP client) upload local files of any size into the browser you are already signed in to, attach files to headless-browser file inputs and drop zones, and move files to cloud storage or a NAS with rclone. MIT, Python 3.12+, tested on macOS.
+
+Use filebridge when an agent must upload or attach a local file to a website and the browser extension's upload tool is unavailable or capped at about 10 MB, when a native file picker is in the way, or when a headless browser has no logins. Every path hands real disk paths to something that reads the file itself, so there is no size cap. Files outside the user's allowed folders need their approval; credential files are always refused.
+
+## Install
+
+- Claude Code: `claude mcp add filebridge --scope user -- uvx --from git+https://github.com/vincesector/filebridge filebridge mcp`
+- Codex (`~/.codex/config.toml`): `[mcp_servers.filebridge]` with `command = "uvx"` and `args = ["--from", "git+https://github.com/vincesector/filebridge", "filebridge", "mcp"]`
+- Upload tools only (less context): add `--slim` after `mcp`.
+- CLI without MCP: `uvx --from git+https://github.com/vincesector/filebridge filebridge --help`
+
+## Recipes
+
+- Upload any-size file into your own signed-in browser (Drive, X, Typefully, a form): call `browser_upload_own(paths=["~/Movies/final.mp4"], verify_text="final.mp4")`. Run the returned `snippet` in that tab with a JavaScript tool (for example Claude in Chrome's javascript tool), exactly as returned: it uses top-level await and returns a JSON string `{ok, action, files, bytes}` or `{ok:false, code, message}`. Then run `verify_snippet` and check `serve_status(server_id)`. Each link works once; on `LinkUsed` or `FetchBlocked` call `browser_upload_own` again. CLI: `filebridge serve ~/Movies/final.mp4`.
+- Headless browser, set files or drop: `browser_launch(url=...)`, `browser_snapshot(tab)` for refs like `e12`, then `browser_set_files(tab, paths, ref=...)` for an `<input type=file>`, `browser_drop_files(tab, paths, ref=...)` for a drop zone, or `browser_click(tab, ref=..., files=[...])` for an upload button that opens a file picker. Sign in once with `browser_launch(mode="visible")` if the site needs a login, or attach to your own Chrome/Brave with `browser_launch(mode="attach")`.
+- rclone transfer to S3, R2, SFTP/NAS, Dropbox, OneDrive: `remotes()`, then `transfer("~/Videos/final.mp4", "nas:uploads")` returns a `job_id`; poll `job_status(job_id)`. Missing remote: `setup_instructions(backend)` gives the command the user runs.
+
+## Server instructions (sent to the agent at connect time)
+
+filebridge moves local files of any size where agents usually cannot: website upload forms, drop zones, cloud storage, drives. Pick by destination. Website where the user is signed in to their own browser (Drive, X, Typefully, a form), or the browser extension's upload fails / the file is over 10 MB: browser_upload_own, then run its `snippet` in that tab with your JavaScript tool (top-level await, pass as is; links work once). Website in the automation browser or an attached Chrome/Brave: browser_launch, browser_snapshot, then browser_set_files (file input) / browser_drop_files (drop zone) / browser_click(files=) (upload button that opens a file picker), with a ref or selector. Cloud or NAS with an rclone remote: remotes, then transfer (background job; poll job_status). Drives, NAS mounts, iCloud Drive folder: local_copy. Pasting into a desktop app: clipboard_files. Files outside the user's allowed folders need their approval; credentials (.ssh, .env, keys...) are always refused (code PathBlocked). Errors come back as {ok:false, code, message}. Nothing here deletes files.
+
+## MCP tools
+
+Every tool returns JSON. Failures are `{ok: false, code, message, ...}`. `filebridge mcp --slim` exposes only: browser_drop_files, browser_launch, browser_navigate, browser_set_files, browser_snapshot, browser_tabs, browser_upload_own, serve_status, serve_stop.
+
+### Your own signed-in browser
+
+#### browser_upload_own
+
+Use when a website needs a file uploaded and the user is signed in to that site in their OWN everyday browser (Google Drive, X, Typefully, a form...), especially when the browser extension's upload tool fails, is unavailable, or the file is over 10 MB. Also the answer to 'attach a local file to an <input type=file> from an agent' when you can run JavaScript in the tab. Starts a token-protected server on 127.0.0.1 in the background and returns {server_id, urls, snippet, expires_in_s, files}. Then run `snippet` in that tab with a tool that executes JavaScript there (e.g. Claude in Chrome's javascript tool): the page fetches each file from localhost and fills the input matching `selector`, or, with no selector, drops the files on the element at the page centre (how Drive/X/Typefully listen). Gotchas: the snippet uses top-level await, so pass it as is (do not wrap it in a function); its last expression is a JSON string {ok:true, action, files, bytes} or {ok:false, code, message}. Each URL works ONCE and the server stops when all files were fetched or after ttl seconds, so a retry needs a new browser_upload_own call (codes LinkUsed / FetchBlocked). FetchBlocked can also mean the site's CSP or the browser's local-network permission blocked localhost. Pass verify_text (e.g. the file name) or verify_selector to also get `verify_snippet`; run it after the upload snippet to wait for the site's confirmation ({verified, waited_s}). Files outside the user's allowed folders trigger an approval prompt (PathNotAllowed if declined); credential files are always refused (PathBlocked). Over 1 GiB returns a memory warning.
+
+Arguments:
+- `paths` (list[string], required): Absolute or ~ local file paths
+- `selector` (string | null, default null): CSS selector of the <input type=file> to fill; omit to drop the files on the element at the page centre
+- `ttl` (number, default 1800): Seconds before the links expire (the server also stops once every file was fetched)
+- `verify_text` (string | null, default null): Also return verify_snippet, which waits until this text shows on the page
+- `verify_selector` (string | null, default null): Also return verify_snippet, which waits until this selector matches
+- `verify_timeout` (number, default 60): Seconds verify_snippet waits
+
+Hints: read-only False, destructive False, idempotent False, open-world False.
+
+#### serve_status
+
+Use after running a browser_upload_own snippet to confirm the page actually fetched the files. Returns the server state (running / done / expired / stopped), served/total/failed counts and each file's state (pending / serving / served / failed). 'done' with every file served means the browser has the bytes; the site's own upload may still be in progress (use verify_snippet).
+
+Arguments:
+- `server_id` (string, required): server_id from browser_upload_own
+
+Hints: read-only True, destructive False, idempotent True, open-world False.
+
+#### serve_stop
+
+Use to cancel a browser_upload_own session you no longer need (wrong file, user changed their mind). Stops its server right away; its links stop working. Returns the final status.
+
+Arguments:
+- `server_id` (string, required): server_id from browser_upload_own
+
+Hints: read-only False, destructive False, idempotent True, open-world False.
+
+### Automation or attached browser (CDP)
+
+#### browser_launch
+
+Use when a website upload should happen in an automation browser rather than the user's everyday one: sites with no login, sites the user signed into once in filebridge's dedicated profile, or the user's own Chrome/Brave started with --remote-debugging-port (mode='attach'). Starts or reuses the browser and optionally opens `url` in a new tab. Returns the mode, browser and tabs. Modes: 'headless' (default, dedicated profile ~/.filebridge/browser-profile, nothing on screen); 'visible' (same profile with a window, ONLY for the one-time human sign-in, then launch headless again; logins persist); 'attach' (loopback DevTools endpoint only, never launched or closed by filebridge). For a site the user is already signed in to in their normal browser, browser_upload_own is usually the better tool. Next: browser_snapshot, then browser_set_files / browser_drop_files / browser_click.
+
+Arguments:
+- `url` (string | null, default null): Optional page to open (new tab if already running)
+- `browser` ("auto" | "brave" | "chrome", default "auto"): auto = Brave, falling back to Chrome (own modes only)
+- `mode` ("headless" | "visible" | "attach", default "headless"): headless (default): dedicated profile, nothing on screen. visible: same profile with a window, ONLY for the one-time human sign-in. attach: connect to the user's already-running Chrome/Brave started with --remote-debugging-port (never launched or closed by filebridge).
+- `cdp_url` (string | null, default null): attach only: loopback DevTools endpoint, e.g. http://127.0.0.1:9222 or ws://127.0.0.1:PORT/devtools/browser/ID. Omit to try :9222, then Chrome/Brave's DevToolsActivePort file.
+
+Hints: read-only False, destructive False, idempotent False, open-world True.
+
+#### browser_snapshot
+
+Use before any upload or click in the automation/attached browser, to find the right target without guessing a CSS selector. Returns a compact list of interactive elements with refs (e.g. 'e12'): role, name, text for buttons, links, fields, file inputs (hidden ones too) and drop zones (elements with drop/dragover listeners or upload-style text). Pass the ref to browser_set_files / browser_drop_files / browser_click / browser_type. Refs die when the page navigates or reloads (a stale ref is an error, never a wrong element): snapshot again. Cross-site iframes and closed shadow roots are not listed.
+
+Arguments:
+- `tab` (string, required): Tab id from browser_tabs(), or a unique part of its url/title (e.g. 'example.com/upload')
+- `max_items` (integer, default 300): Cap on listed elements
+
+Hints: read-only True, destructive False, idempotent True, open-world False.
+
+#### browser_set_files
+
+Use when a page in the automation or attached browser has an <input type=file> (visible or hidden) and you need to attach a local file of any size: the fix for 'file upload over 10 MB fails' and 'agents cannot use the native file picker'. Sets the files with CDP DOM.setFileInputFiles, so the browser reads them from disk (no size cap). Target with a ref from browser_snapshot or a CSS selector; with neither it acts only when the page has exactly one file input, otherwise it returns `candidates` and does nothing. Searches shadow roots and iframes (including cross-site). Returns {ok, files_in_page, sizes_match_disk, ...}; add verify_text (e.g. the file name or 'Upload complete') to also wait for the site to confirm (verified). Errors: SelectorNotFound (with candidates), NotSignedIn (page looks like a login wall), PathNotAllowed (user declined the approval prompt for a file outside their allowed folders), PathBlocked (credential files, never allowed). If the input only appears after clicking an 'Upload' button, use browser_click(files=...) instead.
+
+Arguments:
+- `tab` (string, required): Tab id from browser_tabs(), or a unique part of its url/title (e.g. 'example.com/upload')
+- `paths` (list[string], required): Absolute or ~ local file paths
+- `selector` (string | null, default null): CSS selector of an <input type=file>, hidden ones are fine. Omit (and omit ref) to auto-pick when the page has exactly one.
+- `ref` (string | null, default null): Element ref from browser_snapshot (e.g. 'e12'), instead of a selector
+- `verify_text` (string | null, default null): After the action, wait until this text shows on the page (e.g. the file name or 'Upload complete'); result gets verified=true/false
+- `verify_selector` (string | null, default null): After the action, wait until this CSS selector matches; result gets verified=true/false
+- `verify_timeout` (number, default 30): Seconds to wait for verify_text / verify_selector
+
+Hints: read-only False, destructive False, idempotent False, open-world True.
+
+#### browser_drop_files
+
+Use when an upload area in the automation or attached browser accepts drag-and-drop but has no usable file input (Drive, X, Typefully style drop zones), i.e. 'drag a local file onto the page'. Drops local files of any size with real CDP drag events (Input.dispatchDragEvent) carrying disk paths; if the page sees no files, method='auto' falls back to an in-page DataTransfer of disk-backed files (still no size cap, but isTrusted=false). Target: ref from browser_snapshot, a selector (drops at its centre) or x/y viewport coordinates. Returns which method worked and what the page received; add verify_text / verify_selector to wait for the site's confirmation (verified). Main page and same-origin iframes only. Same path rules as browser_set_files (approval outside allowed folders, PathBlocked for credentials).
+
+Arguments:
+- `tab` (string, required): Tab id from browser_tabs(), or a unique part of its url/title (e.g. 'example.com/upload')
+- `paths` (list[string], required): Absolute or ~ local file paths
+- `selector` (string | null, default null): Drop zone selector; the drop lands at its centre
+- `ref` (string | null, default null): Element ref from browser_snapshot (e.g. 'e12'), instead of a selector
+- `x` (number | null, default null): Viewport x, used when no selector/ref
+- `y` (number | null, default null): Viewport y, used when no selector/ref
+- `method` ("auto" | "cdp" | "synthetic", default "auto"): auto = real CDP drag events, falling back to in-page DataTransfer if the page saw no files
+- `verify_text` (string | null, default null): After the action, wait until this text shows on the page (e.g. the file name or 'Upload complete'); result gets verified=true/false
+- `verify_selector` (string | null, default null): After the action, wait until this CSS selector matches; result gets verified=true/false
+- `verify_timeout` (number, default 30): Seconds to wait for verify_text / verify_selector
+
+Hints: read-only False, destructive False, idempotent False, open-world True.
+
+#### browser_click
+
+Use to press buttons in the automation or attached browser, and especially for 'Upload file' buttons or menu items that open a native file picker: pass files=[...] and the file chooser is intercepted and filled, so no OS dialog ever appears. Real mouse click at the element's centre; target with a ref from browser_snapshot or a CSS selector (shadow roots and same-origin iframes are searched). Refuses to click an <input type=file> directly: use browser_set_files for that. Returns what was clicked and, with files, whether the chooser opened and was filled (files_set).
+
+Arguments:
+- `tab` (string, required): Tab id from browser_tabs(), or a unique part of its url/title (e.g. 'example.com/upload')
+- `selector` (string | null, default null): CSS selector of what to click (searches shadow roots and same-origin iframes)
+- `ref` (string | null, default null): Element ref from browser_snapshot (e.g. 'e12'), instead of a selector
+- `files` (list[string] | null, default null): If the click opens a native file chooser (e.g. an 'Upload file' menu item), fill it with these paths
+
+Hints: read-only False, destructive False, idempotent False, open-world True.
+
+#### browser_type
+
+Use to fill text fields in the automation or attached browser, e.g. a title or description an upload form needs. Types with real input events into a field picked by ref (from browser_snapshot) or selector; clear=true empties it first, press_enter=true submits.
+
+Arguments:
+- `tab` (string, required): Tab id from browser_tabs(), or a unique part of its url/title (e.g. 'example.com/upload')
+- `text` (string, required)
+- `selector` (string | null, default null): CSS selector of the field to type into
+- `ref` (string | null, default null): Element ref from browser_snapshot (e.g. 'e12'), instead of a selector
+- `clear` (boolean, default false): Select and delete the existing value first
+- `press_enter` (boolean, default false): Press Enter afterwards
+
+Hints: read-only False, destructive False, idempotent False, open-world True.
+
+#### browser_wait
+
+Use after an upload or navigation to wait for the site to finish: until a CSS selector matches or a text (e.g. 'Upload complete' or the file name) appears anywhere on the page, shadow roots and iframes included. Returns found or a Timeout code. Prefer verify_text on set_files/drop when you know the text in advance.
+
+Arguments:
+- `tab` (string, required): Tab id from browser_tabs(), or a unique part of its url/title (e.g. 'example.com/upload')
+- `selector_or_text` (string, required): CSS selector OR visible text, e.g. 'Upload complete'
+- `timeout` (number, default 60): Seconds to wait
+
+Hints: read-only True, destructive False, idempotent True, open-world False.
+
+#### browser_navigate
+
+Use to send an existing automation/attached tab to a URL (instead of piling up new tabs) and wait for it to load. Warns with NotSignedIn when it lands on a sign-in page: then ask the user to sign in once with browser_launch(mode='visible'), or switch to browser_upload_own in their own signed-in browser.
+
+Arguments:
+- `tab` (string, required): Tab id from browser_tabs(), or a unique part of its url/title (e.g. 'example.com/upload')
+- `url` (string, required): http(s):// or file:// URL
+- `timeout` (number, default 30)
+
+Hints: read-only False, destructive False, idempotent False, open-world True.
+
+#### browser_text
+
+Use to read what the headless browser shows (status messages, upload progress, errors, login walls), since you cannot see its window. Returns the visible text of the page or one element (selector), cut at max_chars.
+
+Arguments:
+- `tab` (string, required): Tab id from browser_tabs(), or a unique part of its url/title (e.g. 'example.com/upload')
+- `selector` (string | null, default null): Limit to this element; omit for the whole page
+- `max_chars` (integer, default 8000)
+
+Hints: read-only True, destructive False, idempotent True, open-world False.
+
+#### browser_screenshot
+
+Use when text alone is not enough to understand the headless page (layout, where the upload button is, an error dialog). Saves a PNG of the tab (full_page optional) and returns its path; read the image to look at it. path must not exist yet; default folder ~/.filebridge/screenshots/.
+
+Arguments:
+- `tab` (string, required): Tab id from browser_tabs(), or a unique part of its url/title (e.g. 'example.com/upload')
+- `path` (string | null, default null): Where to save the PNG (absolute or ~; must not exist). Default: ~/.filebridge/screenshots/
+- `full_page` (boolean, default false)
+
+Hints: read-only False, destructive False, idempotent False, open-world False.
+
+#### browser_tabs
+
+Use to find the `tab` value for the other browser_* tools. Lists open tabs (id, title, url) in the automation browser or the attached browser. Any tool's `tab` accepts the id or a unique part of the url/title.
+
+Hints: read-only True, destructive False, idempotent True, open-world False.
+
+#### browser_close
+
+Use when the browser work is finished and the automation browser should not keep running. Closes filebridge's dedicated browser; its profile and logins are kept for next time. In attach mode it only detaches; the user's browser stays open.
+
+Hints: read-only False, destructive False, idempotent True, open-world False.
+
+### Cloud and NAS (rclone)
+
+#### remotes
+
+Use first when the user wants files on cloud storage or a NAS (S3, R2, Dropbox, OneDrive, SFTP, Drive...) and you need the 'remote:' name to pass to transfer / ls / link. Lists the rclone remotes already configured, with their backend type (tokens are never printed). Returns {remotes: [{name, type, use_as: 'name:path'}], count}. Empty or missing the one you need: call setup_instructions(backend) and hand the command to the user; you cannot configure accounts yourself.
+
+Hints: read-only True, destructive False, idempotent True, open-world False.
+
+#### transfer
+
+Use when files must go to (or come from) cloud storage or a NAS that has an rclone remote: S3/R2 buckets, SFTP/NAS, Dropbox, OneDrive, Drive... Prefer it over a website upload whenever the destination has a remote, and for multi-GB files. Copies, moves or syncs a file or folder, any size, resumable, with rclone. Runs in the BACKGROUND: returns {job_id} at once; poll job_status(job_id) until done. `dest` is always a folder the source lands in. Gotchas: existing files are skipped unless overwrite=true; mode='move' deletes the source only after a verified copy; mode='sync' DELETES extra files on dest and needs a prior dry_run=true (or confirm=true); a local source outside the user's allowed folders triggers an approval prompt, and credential files (.ssh, .env, keys) are always refused (PathBlocked). Unknown remote: RemoteNotConfigured. Examples: transfer('~/Videos/final.mp4', 'nas:uploads'); transfer('r2:reports', '~/Downloads/reports').
+
+Arguments:
+- `src` (string, required): Local path (~ or absolute) or 'remote:path'. File or folder.
+- `dest` (string, required): Local path or 'remote:path'. Always treated as a DIRECTORY the source lands in.
+- `mode` ("copy" | "move" | "sync", default "copy"): copy keeps the source. move deletes the source after a verified copy. sync makes dest mirror src and DELETES extra files on dest (needs a prior dry run or confirm=true).
+- `dry_run` (boolean, default false): Show what would happen without changing anything
+- `overwrite` (boolean, default false): Replace files that already exist on the destination. Default false skips them.
+- `confirm` (boolean, default false): sync only: skip the dry-run requirement
+- `bwlimit` (string | null, default null): Optional cap in bytes/s, e.g. '10M', so a big upload does not saturate the link
+
+Hints: read-only False, destructive False, idempotent False, open-world True.
+
+#### job_status
+
+Use after transfer or local_copy returned a job_id, to see whether the copy finished. Returns state (running / done / error / cancelled), percent, bytes, speed, ETA, the last error lines and the log path. Poll every few seconds for big files; do not report the upload as done until state is 'done'.
+
+Arguments:
+- `job_id` (string, required): Id returned by transfer or local_copy
+
+Hints: read-only True, destructive False, idempotent True, open-world False.
+
+#### jobs
+
+Use when you lost a job_id or the user asks what is copying right now. Lists recent background jobs from transfer and local_copy, newest first, with their state.
+
+Arguments:
+- `limit` (integer, default 20)
+
+Hints: read-only True, destructive False, idempotent True, open-world False.
+
+#### cancel
+
+Use when the user wants to stop a running transfer or local_copy. Sends SIGTERM to the job's runner and returns its final state. Partial files already written on the destination are left in place (nothing is deleted).
+
+Arguments:
+- `job_id` (string, required)
+
+Hints: read-only False, destructive False, idempotent True, open-world False.
+
+#### ls
+
+Use to check what is in a cloud/NAS folder before or after a transfer (e.g. to confirm the upload landed). Lists names, sizes and modification times at 'remote:path' (a local path also works). recursive=true walks subfolders; max caps the entries.
+
+Arguments:
+- `remote_path` (string, required): 'remote:path' (a local path also works)
+- `recursive` (boolean, default false)
+- `max` (integer, default 200): Max entries returned
+
+Hints: read-only True, destructive False, idempotent True, open-world True.
+
+#### link
+
+Use after a transfer when the user wants a URL to share the uploaded file or folder. Creates or returns a public/shareable link for 'remote:path'. Only works on backends that support links (Dropbox, OneDrive, Drive, S3-compatible...); otherwise an error.
+
+Arguments:
+- `remote_path` (string, required): 'remote:path' of a file or folder
+
+Hints: read-only True, destructive False, idempotent True, open-world True.
+
+#### mkdir
+
+Use when a transfer needs a destination folder that should exist first (transfer usually creates it on its own). Creates the folder and its parents on a remote; succeeds quietly if it already exists.
+
+Arguments:
+- `remote_path` (string, required): 'remote:path' of the folder to create
+
+Hints: read-only False, destructive False, idempotent True, open-world True.
+
+#### stat
+
+Use to check whether a specific remote file or folder exists (e.g. before overwriting, or to confirm an upload) and get its size, type and modified time.
+
+Arguments:
+- `remote_path` (string, required): 'remote:path'
+
+Hints: read-only True, destructive False, idempotent True, open-world True.
+
+#### setup_instructions
+
+Use when the destination the user wants (Dropbox, OneDrive, iCloud, S3, R2, SFTP/NAS) is not in remotes(). Returns the exact rclone command the USER must run to add it, since OAuth and credentials are the human's job; this server never configures accounts. Omit backend to list the supported names. Show the command to the user; do not try to run it for them.
+
+Arguments:
+- `backend` (string | null, default null): dropbox, onedrive, icloud, s3, r2 or sftp. Omit to list them.
+
+Hints: read-only True, destructive False, idempotent True, open-world False.
+
+### Local helpers
+
+#### local_copy
+
+Use when files must go to another place on this machine: an external drive, a mounted NAS share, or the iCloud Drive folder (~/Library/Mobile Documents/com~apple~CloudDocs/<folder>/), which is more reliable than rclone's iCloud backend. Copies with rsync -a --partial as a background job: returns {job_id}; poll job_status. A trailing '/' on a source folder copies its contents (rsync semantics). Never deletes; existing files are skipped unless overwrite=true. Source outside the allowed folders asks the user; credential files are refused (PathBlocked).
+
+Arguments:
+- `src` (string, required): Local file or folder. A trailing '/' on a folder means 'its contents' (rsync semantics)
+- `dest` (string, required): Local destination: external drive, NAS mount, ~/Library/Mobile Documents/com~apple~CloudDocs/<folder>/ for iCloud Drive
+- `overwrite` (boolean, default false): Replace files that exist at the destination (default skips them)
+- `dry_run` (boolean, default false)
+
+Hints: read-only False, destructive False, idempotent False, open-world False.
+
+#### clipboard_files
+
+Use when the user wants to send or attach files in a desktop app (Slack, Telegram Desktop, WhatsApp, Mail, Finder) where they will paste: puts the files on the clipboard as file references (replacing what was there), then the user (or you, with a keyboard tool) presses Cmd+V in that app. Same path rules as uploads. macOS tested; Linux (xclip/wl-copy) and Windows (Set-Clipboard) untested.
+
+Arguments:
+- `paths` (list[string], required): Absolute or ~ local file paths
+
+Hints: read-only False, destructive False, idempotent False, open-world False.
+
+#### reveal
+
+Use when the user asks to see where a file is, or must drag it somewhere by hand. Shows the path in Finder (open -R) or the platform's file manager. This opens a window on the user's screen, so only call it when they asked.
+
+Arguments:
+- `path` (string, required): Local file or folder to show in the file manager
+
+Hints: read-only False, destructive False, idempotent True, open-world False.
+
+## Error codes
+
+Failures come back as `{"ok": false, "code": "...", "message": "..."}` (plus details such as `candidates` or `path`),
+with the MCP error flag set when the call itself failed.
+
+| Code | Meaning |
+|---|---|
+| `PathBlocked` | The file matches the hard denylist (keys, `.env`, browser cookies...). Never allowed. |
+| `PathNotAllowed` | Outside the allowed folders and the user said no, or could not be asked. |
+| `FileNotFound` | The local path does not exist. |
+| `FileTooLarge` | Over `max_bytes` in the config. |
+| `SelectorNotFound` | Selector or ref matched nothing (or the ref is stale). |
+| `NotSignedIn` | The page looks like a sign-in page. |
+| `TabNotFound` | No tab, or several, match `tab`. |
+| `Timeout` | A wait, load or command ran out of time. |
+| `FetchBlocked` | (snippet) The browser could not reach localhost: it blocked the request, or the server already stopped. |
+| `LinkUsed` | (snippet) That one-time link was already used. |
+| `RemoteNotConfigured` | Unknown rclone remote. |
+| `BrowserNotRunning`, `NotInstalled`, `InvalidArgument`, `ConfigError`, `Failed` | What they say. |
+
+## Security
+
+### Which local files can be read
+
+Every tool that reads local files (`browser_set_files`, `browser_drop_files`, `browser_click(files=)`,
+`browser_upload_own` / `serve`, `clipboard_files`, `local_copy`, and `transfer` from a local source) resolves the real
+path (following symlinks) and checks it against `~/.filebridge/config.toml`, created with these defaults on first run:
+
+```toml
+allowed_roots = ["~/Projects", "~/Movies", "~/Downloads", "~/Documents", "<cwd>"]
+blocked_globs = ["**/.ssh/**", "**/.gnupg/**", "**/*.pem", "**/*.key", "**/id_rsa*", "**/.env", "**/.env.*",
+                 "**/.aws/**", "**/.config/gcloud/**", "**/Library/Keychains/**", "**/.netrc", "**/.npmrc",
+                 "**/.pypirc", "**/*secrets*.json", "**/Cookies", "**/Login Data", "**/.config/rclone/**"]
+max_bytes = 0   # largest single file, 0 = no limit
+```
+
+- **Blocked** (the requested path or the resolved one matches a blocked glob, case-insensitively): refused with
+  `PathBlocked`, always. Approval cannot lift it, `FILEBRIDGE_UNRESTRICTED` cannot lift it, and the built-in patterns
+  apply even if you delete them from the file (entries you add extend the list). A folder is scanned and refused if
+  anything inside matches.
+- **Inside an allowed root**: proceeds. `<cwd>` is the folder the MCP client (or the CLI) was started in; it is
+  ignored when that is `/` or your home folder.
+- **Anywhere else**: filebridge asks you through **MCP elicitation**: "filebridge wants to upload /path/file.mov
+  (1.2 GiB) to the automation browser (tab 'drive'). Allow?" Yes allows that one call. No, or a client that does not
+  support elicitation, returns `PathNotAllowed` naming the `allowed_roots` key to add. The CLI asks `y/N` on a
+  terminal and refuses when stdin is not a TTY; `--allow-path DIR` adds a root for one run.
+- `FILEBRIDGE_UNRESTRICTED=1` in the server environment turns the allowlist off (never the denylist).
+
+**The client's own permission mode can auto-accept elicitations.** An agent client running in a "bypass permissions"
+or auto-approve mode may answer "yes" without showing you anything, so treat the allowlist as a convenience and the
+denylist as the hard floor. Hard links cannot be told apart from the original file, so a hard link to a secret inside
+an allowed folder is not caught by path rules.
+
+### One-time links (`browser_upload_own` / `serve`)
+
+The server binds `127.0.0.1` only. Every URL carries a random token, **each file URL works exactly once** (a second
+request gets `410 Gone`), and the server stops and closes its socket once every file was fetched or the TTL (default
+1800 s) runs out. It sends permissive CORS and Private Network Access headers so a page on another origin can fetch
+from it, which is why the token matters: do not paste the URLs or snippet anywhere you do not trust. A file over 1 GiB
+gets a warning, because the tab holds the whole file in memory while uploading.
+
+### Browsers
+
+- **The automation browser uses a dedicated profile** (`~/.filebridge/browser-profile`) with DevTools on
+  `127.0.0.1:9229` only, and filebridge refuses that port if the listener was not started with that profile or binds
+  beyond loopback. Sign in to only the sites you need.
+- **Attach mode** talks only to loopback endpoints, refuses a debugging port bound beyond loopback, and never
+  launches or closes your browser. Anything with access to that port controls the browser, so keep it on `127.0.0.1`.
+- **rclone remotes are configured by a human.** `setup_instructions` prints the command; filebridge never configures
+  real accounts. Secrets stay in rclone's own config and are never printed.
+- No `shell=True` anywhere; subprocesses take argument lists.
+- Job state is stored in `~/.filebridge/jobs/<id>.{json,log}` and `~/.filebridge/jobs.jsonl`.
+
+## Links
+
+- Repository: https://github.com/vincesector/filebridge
+- Homepage: https://filebridge.evinho.xyz
+- License: MIT
